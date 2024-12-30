@@ -10,12 +10,12 @@ This repository introduces a novel approach to text-to-image generation that uti
 The dataset should be organized in the following structure:
 
 ```
-multimodal_celeba_hq.zip
-├── images/
+MM-Celeba-HQ-Dataset.zip
+├── image/
 │   ├── 000001.jpg
 │   ├── 000002.jpg
 │   └── ...
-└── celeba-caption/
+└── text/
     ├── 000001.txt
     ├── 000002.txt
     └── ...
