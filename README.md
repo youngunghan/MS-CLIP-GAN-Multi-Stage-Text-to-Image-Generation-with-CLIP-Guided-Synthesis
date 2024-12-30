@@ -13,6 +13,8 @@ The dataset should be organized in the following structure:
 
 ```
 MM-Celeba-HQ-Dataset.zip
+├── image.zip/
+├── text.zip/
 ├── image/
 │   ├── 000001.jpg
 │   ├── 000002.jpg
