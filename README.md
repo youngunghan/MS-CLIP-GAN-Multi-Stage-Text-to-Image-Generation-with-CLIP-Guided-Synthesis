@@ -3,6 +3,8 @@
 This repository introduces a novel approach to text-to-image generation that utilizes CLIP embeddings in a multi-stage synthesis pipeline. The method achieves high-quality and semantically consistent image generation from textual descriptions.
 
 ---
+## Dataset Download and Other Details
+Instructions for downloading the dataset and additional details are provided at the bottom of this README file.
 
 ## Dataset Preprocessing
 
@@ -71,4 +73,6 @@ The preprocessed datasets will be saved as:
 
 ---
 
-This setup ensures the data is prepared efficiently for training and evaluation in the multi-stage text-to-image generation pipeline.
+## References
+- Dataset: The dataset is based on MM-CelebA-HQ-Dataset, which provides multi-modal data including images, captions, semantic masks, and sketches.
+- Dataset Preprocessing Code: The preprocessing scripts are adapted from StyleGAN2-ADA-PyTorch.
