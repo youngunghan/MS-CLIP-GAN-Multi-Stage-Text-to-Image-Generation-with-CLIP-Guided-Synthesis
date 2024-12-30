@@ -12,7 +12,7 @@ Instructions for downloading the dataset and additional details are provided at 
 The dataset should be organized in the following structure:
 
 ```
-MM-Celeba-HQ-Dataset.zip
+data/MM-Celeba-HQ-Dataset.zip
 ├── image.zip/
 ├── text.zip/
 ├── image/
