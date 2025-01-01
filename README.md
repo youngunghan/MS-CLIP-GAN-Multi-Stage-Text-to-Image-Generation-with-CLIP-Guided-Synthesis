@@ -8,6 +8,25 @@ Instructions for downloading the dataset and additional details are provided at 
 
 ## Dataset Preprocessing
 
+### 0. Environment Setup
+Before preprocessing the dataset, ensure you have the required environment set up:
+
+1. Create Conda Environment:
+```
+conda env create -f environment.yml
+```
+
+2. Activate the Environment:
+```
+conda activate msclipgan
+```
+
+3. Install Additional Dependencies (Linux Only):
+If you encounter the error ImportError: libGL.so.1: cannot open shared object file, install the following:
+```
+sudo apt-get install libgl1-mesa-glx
+```
+
 ### 1. Dataset Structure
 The dataset should be organized in the following structure:
 
