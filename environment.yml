@@ -1,0 +1,35 @@
+name: msclipgan
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.8
+  - pytorch>=1.7.1
+  - torchvision>=0.8.2
+  - torchmetrics
+  - torchmetrics[image]
+  - cudatoolkit=11.3
+  - numpy>=1.19.2
+  - pillow>=8.0.0
+  - opencv>=4.5.0
+  - matplotlib>=3.3.0
+  - tqdm>=4.50.0
+  - click>=7.1.2
+  - pip>=20.2
+  - tensorboard==2.11.0
+  - pip:
+    - ftfy
+    - regex
+    - git+https://github.com/openai/CLIP.git
+    - torchsummary>=1.5.1
+    - pytorch-ignite>=0.4.9
+    - torch-fidelity
+    - torchmetrics[image]
+
+variables:
+  PYTHONWARNINGS: "ignore"
+
+# ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+# apt-get install libgl1-mesa-glx
