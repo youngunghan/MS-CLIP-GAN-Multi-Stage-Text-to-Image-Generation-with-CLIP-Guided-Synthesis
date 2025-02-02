@@ -97,7 +97,7 @@ The preprocessed datasets will be saved as:
 
 ---
 
-## Training the Model
+## Train
 
 ### 0. Environment Setup
 Ensure you have the required environment set up as described in the "Environment Setup" section above.
@@ -128,7 +128,7 @@ tensorboard --logdir=runs
 ```
 
 ---
-### Evaluation
+## Evaluation
 
 #### 0. Environment Setup
 Ensure you have the required environment set up as described in the "Environment Setup" section above.
@@ -151,7 +151,9 @@ Execute an evaluation script to start the evaluation process:
 
 This will start the evaluation process using the specified parameters.
 
-### Inference
+---
+
+## Inference
 
 #### 0. Environment Setup
 Ensure you have the required environment set up as described in the "Environment Setup" section above.
