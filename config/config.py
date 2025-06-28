@@ -7,12 +7,12 @@ from torchvision.transforms import InterpolationMode
 class CLIPConfig:
     """CLIP model configuration and transforms"""
     
-    # CLIP 모델 기본 설정
-    IMAGE_SIZE: int = 224  # CLIP 입력 크기
-    MIN_QUALITY_SIZE: int = 256  # 최소 품질 기준
-    FEATURE_DIM: int = 512  # CLIP 특징 벡터 차원
+    # CLIP model configuration
+    IMAGE_SIZE: int = 224         # CLIP input size
+    MIN_QUALITY_SIZE: int = 256   # Minimum quality size
+    FEATURE_DIM: int = 512        # CLIP feature vector dimension
     
-    # 정규화 상수
+    # Normalization constants
     MEAN: Tuple[float, float, float] = (0.48145466, 0.4578275, 0.40821073)
     STD: Tuple[float, float, float] = (0.26862954, 0.26130258, 0.27577711)
     
