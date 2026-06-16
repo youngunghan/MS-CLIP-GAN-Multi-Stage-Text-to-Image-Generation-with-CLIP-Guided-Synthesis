@@ -1,0 +1,20 @@
+# MS-CLIP-GAN docs
+
+> CLIP 텍스트 임베딩 조건 다단계 텍스트→이미지 GAN(64→128→256, MM-CelebA-HQ). 사람용 인덱스는 README.md, 이 파일은 LLM 에이전트용 압축 인덱스다.
+
+## tutorials
+- [tutorials/quickstart.md](tutorials/quickstart.md) : 설치 → 전처리 → 학습 → 추론 happy path
+
+## how-to
+- [how-to/prepare-dataset.md](how-to/prepare-dataset.md) : MM-CelebA-HQ 분할·CLIP 피처 전처리 → train/test zip
+- [how-to/train-eval-infer.md](how-to/train-eval-infer.md) : 학습(단일/다중 GPU·resume)·평가·추론 실행
+- [how-to/troubleshooting.md](how-to/troubleshooting.md) : 증상별 문제 해결
+
+## reference
+- [reference/configuration.md](reference/configuration.md) : CLI 옵션·버전 핀·하이퍼파라미터
+- [reference/cli.md](reference/cli.md) : 스크립트/셸 진입점과 인자
+- [reference/dataset-format.md](reference/dataset-format.md) : 전처리 zip 구조·dataset.json 스키마·데이터로더 계약
+
+## explanation
+- [explanation/architecture.md](explanation/architecture.md) : 다단계 G/D 구조·텐서 흐름·CLIP 조건 증강·손실
+- [explanation/correctness-and-fixes.md](explanation/correctness-and-fixes.md) : ⭐ 정확성 감사 수정·남은 주의점(수치 인용 전 필독)

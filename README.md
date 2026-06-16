@@ -4,8 +4,18 @@ This repository introduces a novel approach to text-to-image generation that uti
 
 ---
 
-## Dataset Download and Other Details
-Instructions for downloading the dataset and additional details are provided at the bottom of this README file.
+## Documentation
+
+Full developer docs live in [docs/README.md](docs/README.md) (human index) and [docs/llms.txt](docs/llms.txt) (LLM index), organized by Diátaxis (tutorials / how-to / reference / explanation):
+
+- Quickstart: [docs/tutorials/quickstart.md](docs/tutorials/quickstart.md)
+- Dataset preparation: [docs/how-to/prepare-dataset.md](docs/how-to/prepare-dataset.md)
+- Architecture (with figures): [docs/explanation/architecture.md](docs/explanation/architecture.md)
+- Correctness & known limitations: [docs/explanation/correctness-and-fixes.md](docs/explanation/correctness-and-fixes.md)
+
+## Dataset
+
+This project uses **MM-CelebA-HQ**. Download it from the original distribution (MM-CelebA-HQ-Dataset) and place it as a directory containing `image.zip` and `text.zip` (see the structure below). The preprocessed output zip schema is documented in [docs/reference/dataset-format.md](docs/reference/dataset-format.md).
 
 ---
 
@@ -34,18 +44,12 @@ Before preprocessing the dataset, ensure you have the required environment set u
 The dataset should be organized in the following structure:
 
 ```
-data/MM-Celeba-HQ-Dataset.zip
-├── image.zip/
-├── text.zip/
-├── image/
-│   ├── 000001.jpg
-│   ├── 000002.jpg
-│   └── ...
-└── text/
-    ├── 000001.txt
-    ├── 000002.txt
-    └── ...
+data/mm-celeba-hq-dataset/
+├── image.zip          # images/000001.jpg, images/000002.jpg, ...
+└── text.zip           # celeba-caption/000001.txt, celeba-caption/000002.txt, ...
 ```
+
+> The preprocessing scripts take `--source ./data/mm-celeba-hq-dataset` (a directory containing `image.zip` and `text.zip`), not a single archive file. See [docs/how-to/prepare-dataset.md](docs/how-to/prepare-dataset.md).
 
 ### 2. Split Dataset
 To split the dataset into training and testing sets:
@@ -64,7 +68,7 @@ This will generate two pickle files:
 - `celeba_filenames_train.pickle`: Contains filenames for the training set.
 - `celeba_filenames_test.pickle`: Contains filenames for the test set.
 
-You can customize the split ratio by modifying the `--train_ratio` parameter in `split_dataset.sh` (default: `0.8`).
+You can customize the split ratio by modifying the `--train_ratio` parameter in `split_dataset.sh` (default: `0.85`).
 
 ### 3. Preprocess Dataset
 After splitting the dataset, preprocess both training and testing sets:
@@ -171,10 +175,13 @@ Create and execute an inference script to generate images from text:
 
 2. **Run the inference script:**
    ```bash
-   ./infer.sh
+   # ./infer.sh [CKPT_DIR] [EPOCH]
+   # CKPT_DIR is the directory containing epoch_<EPOCH>_Gen.pt
+   ./infer.sh ./checkpoints/<run_name>/ckpt 99
    ```
 
 This will generate images based on the provided text descriptions using the specified checkpoint.
+Only the generator checkpoint is required for inference; discriminator checkpoints are not needed.
 
 ---
 
