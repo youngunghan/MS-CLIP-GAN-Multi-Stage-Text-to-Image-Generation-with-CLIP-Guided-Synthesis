@@ -103,18 +103,18 @@ def open_image_folder(source_dir, *, max_images: Optional[int], src_data_list: s
     print("Checking folder dataset...")
     print(f"Source directory: {source_dir}")
     print(f"Data list path: {src_data_list}")
-    
+
     with open(src_data_list, 'rb') as f:
         data_list = pickle.load(f)
         print("Data list from pickle (first 5):", data_list[:5])
-    
+
     image_dir = Path(op.join(source_dir, 'images'))
     print(f"Looking for images in: {image_dir}")
-    
+
     input_images = [str(f) for f in sorted(image_dir.rglob('*')) \
-                    if is_image_ext(f) and os.path.isfile(f) and 
+                    if is_image_ext(f) and os.path.isfile(f) and
                     op.basename(f).split('.')[0] in data_list]
-    
+
     print(f"Found image files (first 5): {input_images[:5]}")
     print(f'Total images found: {len(input_images)}')
 
@@ -133,13 +133,14 @@ def open_image_folder(source_dir, *, max_images: Optional[int], src_data_list: s
                 if img.shape[2] == 4:
                     img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-                try:    
+                try:
                     with open(txt_path, 'r') as file:
                         txt = file.read().split('\n')
                 except:
                     txt = ''
             except:
                 print(f'{img_path} failed')
+                continue  # skip failed images instead of yielding a stale/undefined img
 
             yield dict(img=img, txt=txt)
             if idx >= max_idx-1:
@@ -150,18 +151,18 @@ def open_image_folder(source_dir, *, max_images: Optional[int], src_data_list: s
 #----------------------------------------------------------------------------
 def open_image_zip(source_dir, max_images: Optional[int], src_data_list: str):
     print('Using zip file as dataset')
-    
+
     with open(src_data_list, 'rb') as f:
         data_list = pickle.load(f)
         print("Data list from pickle (first 5):", data_list[:5])
-    
+
     image_zip = os.path.join(source_dir, 'image.zip')
     text_zip = os.path.join(source_dir, 'text.zip')
-    
+
     with zipfile.ZipFile(image_zip, mode='r') as z:
         all_files = z.namelist()
         print("Files in image.zip (first 5):", all_files[:5])
-        
+
         input_images = [str(f) for f in sorted(all_files) \
                        if is_image_ext(f) and Path(f).stem in data_list]
         print("Matched image files (first 5):", input_images[:5])
@@ -175,8 +176,8 @@ def open_image_zip(source_dir, max_images: Optional[int], src_data_list: str):
             for idx, fname in enumerate(input_images):
                 img_name = fname
                 base_name = Path(fname).stem
-                txt_name = f"celeba-caption/{base_name}.txt" 
-                
+                txt_name = f"celeba-caption/{base_name}.txt"
+
                 try:
                     # 이미지 읽기
                     with img_z.open(img_name, 'r') as file:
@@ -363,10 +364,10 @@ def open_dataset(source, *, max_images: Optional[int], src_data_list: str):
             print(f"No zip files found in {source}, trying as regular folder")
             return open_image_folder(source, max_images=max_images, src_data_list=src_data_list)
     elif os.path.isfile(source):
-        if source.endswith('.zip'):
-            return open_image_zip(source, max_images=max_images, src_data_list=src_data_list)
-        else:
-            error(f'Unsupported file type: {source}')
+        # open_image_zip expects a *directory* that contains image.zip and text.zip,
+        # not a single archive file, so reject single-file sources with a clear message.
+        error(f'--source must be a directory containing image.zip and text.zip '
+              f'(or a folder of images), not a single file: {source}')
     else:
         error(f'Missing input file or directory: {source}')
 
@@ -474,7 +475,7 @@ def convert_dataset(
     """
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     PIL.Image.init() # type: ignore
-    clip_model, _ = clip.load("ViT-B/32")  
+    clip_model, _ = clip.load("ViT-B/32")
     clip_model.to(device).eval()
     print('start')
     if dest == '':
@@ -522,7 +523,7 @@ def convert_dataset(
                     error('Input images must be stored as RGB or grayscale')
                 if width != 2 ** int(np.floor(np.log2(width))):
                     error('Image width/height after scale and crop are required to be power-of-two')
-            
+
             if dataset_attrs == cur_image_attrs:
                 with torch.no_grad():
                     # Save the image as an uncompressed PNG.
@@ -537,7 +538,7 @@ def convert_dataset(
                     feature = feature / cut_num_
 
                     text = image['txt']
-                    
+
                     text_feature_list = []
                     for text_line in text[:10]:
                         # print(text_line)
@@ -562,7 +563,14 @@ def convert_dataset(
                                     text_feature += clip_model.encode_text(te) / len(tokenized_text)
                                 text_feature_list.append(text_feature.view(-1).cpu().numpy().tolist())
                                 print('text too long')
-                                
+
+                    # Skip samples with no usable caption so downstream never stores an
+                    # empty text-feature list (which would IndexError in the dataloader).
+                    if len(text_feature_list) == 0:
+                        print(f'{archive_fname}: no valid caption found, skipping sample')
+                        f_count += 1
+                        continue
+
                     clip_img_features.append([archive_fname, feature.view(-1).cpu().numpy().tolist()])
                     clip_txt_features.append([archive_fname, text_feature_list])
 
@@ -573,7 +581,7 @@ def convert_dataset(
         except:
             print(f'{archive_fname} failed')
             f_count += 1
-        
+
     metadata = {
         'clip_img_features': clip_img_features if all(x is not None for x in clip_img_features) else None,
         'clip_txt_features': clip_txt_features if all(x is not None for x in clip_txt_features) else None,

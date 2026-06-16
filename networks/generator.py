@@ -6,8 +6,8 @@ class ConditioningAugmention(nn.Module):
     def __init__(self, c_txt_dim, cond_dim, device):
         super(ConditioningAugmention, self).__init__()
         self.device = device
-        self.c_txt_dim = c_txt_dim  
-        self.c_hat_txt_dim = cond_dim      
+        self.c_txt_dim = c_txt_dim
+        self.c_hat_txt_dim = cond_dim
         self.layer = LBR(self.c_txt_dim, self.c_hat_txt_dim * 2, norm=False)
 
     def forward(self, x):
@@ -16,12 +16,12 @@ class ConditioningAugmention(nn.Module):
             x: CLIP text embedding c_txt
         Outputs:
             condition: augmented text embedding c_hat_txt
-            mu: mean of x extracted from self.layer. 
+            mu: mean of x extracted from self.layer.
             log_sigma: log(sigma) of x extracted from self.layer.
         '''
         features = self.layer(x)
         mu, log_sigma = features[:, :self.c_hat_txt_dim], features[:, self.c_hat_txt_dim:]
-        
+
         # Reparameterization trick
         epsilon = torch.randn_like(mu).to(mu.device) # z를 mu와 같은 디바이스에 생성
         condition = mu + torch.exp(log_sigma) * epsilon # c_hat_txt
@@ -44,33 +44,34 @@ class ImageExtractor(nn.Module):
         return self.image_net(x)
 
 class Generator_type_1(nn.Module):
-    def __init__(self, in_chans, input_dim):
+    def __init__(self, in_chans, input_dim, cond_dim):
         super(Generator_type_1, self).__init__()
         self.in_chans = in_chans # 1024
         self.input_dim = input_dim # cond_dim + noise_dim
+        self.cond_dim = cond_dim
 
         self.mapping_net = self._mapping_net()
         self.upsample_net = self._upsample_net()
         self.image_net = self._image_net()
-        
-        cond_dim = input_dim - 100  # noise_dim이 100이라고 가정
+
+        # cond_dim is passed in explicitly (do NOT assume noise_dim == 100).
         self.ssa_blocks = nn.ModuleList([
-            SemanticSpatialAwareBlock(in_chans, cond_dim) 
+            SemanticSpatialAwareBlock(in_chans, cond_dim)
             for _ in range(2)
         ])
-    
+
     def _mapping_net(self):
         # Change the input tensor dimension [projection_dim + noise_dim] into [Ng * 4 * 4]
         initial_dim = self.input_dim       # initial_dim
         hidden_dim = initial_dim           # intermediate_dim
         final_dim = self.in_chans * 4 * 4  # final_dim
-        
+
         lbrs = [LBR(initial_dim, hidden_dim, norm='ln', act='leakyrelu')]
         for _ in range(6):
             lbrs.append( LBR(hidden_dim, hidden_dim, norm='ln', act='leakyrelu') )
         lbrs.append( LBR(hidden_dim, final_dim, norm='ln', act='leakyrelu') )
         return nn.Sequential(*lbrs)
-    
+
         #return LBR(self.input_dim, self.in_chans * 4 * 4, act='leakyrelu')
         #Use StyleGAN's architecture
 
@@ -84,7 +85,7 @@ class Generator_type_1(nn.Module):
                     4x4 -> 8x8 -> 16x16 -> 32x32 -> 64x64
         # Conv2d
             H_out = ((H_in + 2 * padding - kernel_size) // stride) + 1
-                    
+
         # todo
             # Pixel Shuffle
             class PixelShuffleUpsampling(nn.Module):
@@ -97,7 +98,7 @@ class Generator_type_1(nn.Module):
                     self.bn = nn.BatchNorm2d(out_channels*4)
                     self.relu = nn.ReLU()
                     self.shuffle = nn.PixelShuffle(2)
-                
+
                 def forward(self, x):
                     x = self.relu(self.bn(self.conv(x)))
                     return self.shuffle(x)
@@ -106,7 +107,7 @@ class Generator_type_1(nn.Module):
                 def __init__(self, in_channels, out_channels):
                     super().__init__()
                     self.upsample = nn.Upsample(
-                        scale_factor=2, 
+                        scale_factor=2,
                         mode='bilinear',
                         align_corners=False
                     )
@@ -116,7 +117,7 @@ class Generator_type_1(nn.Module):
                     )
                     self.bn = nn.BatchNorm2d(out_channels)
                     self.relu = nn.ReLU()
-                
+
                 def forward(self, x):
                     x = self.upsample(x)
                     return self.relu(self.bn(self.conv(x)))
@@ -125,15 +126,15 @@ class Generator_type_1(nn.Module):
         # Change the input tensor dimension [Ng, 4, 4] into [Ng/16, 64, 64]
         cbr2ds = []
         in_chans = self.in_chans
-        for _ in range(4):  
+        for _ in range(4):
             out_chans = in_chans // 2
-            cbr2ds.append( CBR2d(in_chans, out_chans, kernel_size=4, stride=2, padding=1, act='relu', trans=True) ) 
+            cbr2ds.append( CBR2d(in_chans, out_chans, kernel_size=4, stride=2, padding=1, act='relu', trans=True) )
             in_chans = out_chans
         return nn.Sequential(*cbr2ds)
-        
+
     def _image_net(self):
         return ImageExtractor(self.in_chans // 2**4)
-        
+
     def forward(self, cond, noise):
         '''
         Inputs:
@@ -145,14 +146,14 @@ class Generator_type_1(nn.Module):
         '''
         # Concatenate condition and noise
         cond_noise = torch.cat((cond, noise), dim=1)  # [B, 356]
-        
+
         # Transform to initial feature map through mapping network
         x = self.mapping_net(cond_noise).view(-1, self.in_chans, 4, 4)  # [B, 1024, 4, 4]
-        
+
         # Apply SSA blocks to inject text information
         for ssa_block in self.ssa_blocks:
             x = ssa_block(x, cond)
-        
+
         # Progressive upsampling: 4x4 -> 8x8 -> 16x16 -> 32x32 -> 64x64
         out = self.upsample_net(x)
         out_image = self.image_net(out)
@@ -166,29 +167,29 @@ class Generator_type_2(nn.Module):
 
         self.in_chans = in_chans
         self.cond_dim = cond_dim
-        
+
         self.joint_net = self._joint_net()
         self.res_net = nn.ModuleList( [self._res_net() for _ in range(num_res_layer)] )
         self.upsample_net = self._upsample_net()
-        self.image_net = self._image_net()   
-        
+        self.image_net = self._image_net()
+
         self.ssa_blocks = nn.ModuleList([
             SemanticSpatialAwareBlock(in_chans, cond_dim)
             for _ in range(2)
-        ])     
+        ])
 
     def _joint_net(self):
         # Just change the channel size of input tensor into self.in_chans
         # The input channel of joining_layer should consider applying the condition vector as attention.
         return CBR2d(self.in_chans + self.cond_dim, self.in_chans)
-    
+
     def _res_net(self):
         return ResBlock(self.in_chans)
 
     def _upsample_net(self):
         # Change the input tensor dimension [C, H, W] into [C/2, 2H, 2W]
         return CBR2d(self.in_chans, self.in_chans // 2, kernel_size=4, stride=2, padding=1, trans=True)
-    
+
     def _image_net(self):
         return ImageExtractor(self.in_chans // 2)
 
@@ -202,22 +203,22 @@ class Generator_type_2(nn.Module):
             out_image: generated image [B, 3, 2H, 2W] e.g., [32, 3, 128, 128]
         '''
         B, _, H, W = prev_out.shape
-        
+
         # Reshape and expand condition to spatial dimensions
         cond = cond.reshape(B, -1)
         cond_spatial = cond.view(B, -1, 1, 1).expand(-1, -1, H, W)
-        
+
         # Combine features with condition
         feat = torch.cat([prev_out, cond_spatial], dim=1)
         out = self.joint_net(feat)
-        
+
         # Apply SSA blocks and residual processing
         for ssa in self.ssa_blocks:
             out = ssa(out, cond)
-        
+
         for res_block in self.res_net:
             out = res_block(out)
-            
+
         # Final upsampling and image generation
         out = self.upsample_net(out)
         out_image = self.image_net(out)
@@ -227,15 +228,15 @@ class Generator(nn.Module):
     def __init__(self, in_chans, out_chans, noise_dim, cond_dim, clip_emb_dim, num_stage, device):
         super(Generator, self).__init__()
         self.device = device
-        
+
         self.in_chans = in_chans
         self.out_chans = out_chans
-        
+
         self.noise_dim = noise_dim
         self.cond_dim = cond_dim
 
         self.input_dim = self.noise_dim + self.cond_dim
-        self.c_txt_dim = clip_emb_dim        
+        self.c_txt_dim = clip_emb_dim
 
         self.num_stage = num_stage
         self.num_res_layer_type2 = 2  # NOTE: you can change this
@@ -255,7 +256,7 @@ class Generator(nn.Module):
         Stage i generator's self.in_chans = stage i-1 generator's 'out' tensor's channel size
         '''
         if i == 0:
-            return Generator_type_1(self.in_chans, self.input_dim)
+            return Generator_type_1(self.in_chans, self.input_dim, self.cond_dim)
         else:
             prev_chans = self.in_chans // (2 ** 4 << (i - 1)) # (16 * (2 ** (i - 1)))
             return Generator_type_2(prev_chans, self.cond_dim, self.num_res_layer_type2, self.device)
@@ -269,9 +270,9 @@ class Generator(nn.Module):
             fake_images: List that containing the all fake images generated from each stage's Generator
             mu: mean of c_txt extracted from CANet
             log_sigma: log(sigma) of c_txt extracted from CANet
-        '''   
+        '''
         cond, mu, log_sigma = self.cond_aug(txt_emb)
-        
+
         prev_out = None
         fake_images = []
         for i in range(self.num_stage):
