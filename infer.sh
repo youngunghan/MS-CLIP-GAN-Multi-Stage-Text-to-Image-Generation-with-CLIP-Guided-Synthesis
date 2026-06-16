@@ -1,6 +1,13 @@
+#!/bin/bash
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+
+# Usage: ./infer.sh [CKPT_DIR] [EPOCH]
+# CKPT_DIR must contain epoch_<EPOCH>_Gen.pt (discriminator checkpoints are NOT required).
+CKPT_DIR=${1:-./checkpoints/<run_name>/ckpt}
+EPOCH=${2:-99}
+
 python scripts/infer.py \
-    --prompt The woman is young and has blond hair, and arched eyebrows. \
-    --load_epoch 99 \
+    --prompt "The woman is young and has blond hair, and arched eyebrows." \
+    --load_epoch "$EPOCH" \
     --eval_data_path None \
-    --checkpoint_path /home/yuhan/test/Text-to-Image-generation-main/checkpoints/msclipgan_bs128_lr1e-4_epoch100-2025_01_08_07_47_55/ckpt
+    --checkpoint_path "$CKPT_DIR"

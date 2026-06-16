@@ -1,6 +1,12 @@
+#!/bin/bash
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+
+# Usage: ./eval.sh [CKPT_DIR] [EPOCH]
+CKPT_DIR=${1:-./checkpoints/<run_name>/ckpt}
+EPOCH=${2:-99}
+
 python scripts/eval.py \
-    --prompt The woman is young and has blond hair, and arched eyebrows. \
-    --load_epoch 99 \
-    --eval_data_path /home/yuhan/test/Text-to-Image-generation-main/data/testset.zip \
-    --checkpoint_path /home/yuhan/test/Text-to-Image-generation-main/checkpoints/msclipgan_bs128_lr1e-4_epoch100-2025_01_08_07_47_55/ckpt
+    --prompt "The woman is young and has blond hair, and arched eyebrows." \
+    --load_epoch "$EPOCH" \
+    --eval_data_path ./data/testset.zip \
+    --checkpoint_path "$CKPT_DIR"
