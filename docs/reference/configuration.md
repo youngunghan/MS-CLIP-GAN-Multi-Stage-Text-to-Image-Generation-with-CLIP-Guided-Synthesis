@@ -2,7 +2,7 @@
 
 > **범위:** CLI 옵션(base/train/test), 의존성(environment.yml 기준), 기본 하이퍼파라미터. 옵션 정의는 [options/](../../options/).
 > **대상:** 개발자.
-> **상태:** 구현 반영 — 기준일 2026-06-16.
+> **상태:** 구현 반영 — 기준일 2026-06-17.
 
 ## 1. 공통 옵션 (BaseOptions)
 
@@ -22,13 +22,13 @@
 | `--report_interval` | int | 100 | 로그 주기(iter) |
 | `--noise_dim` | int | 100 | 생성기 입력 노이즈 z 차원 |
 | `--condition_dim` | int | 128 | 조건 증강 후 차원(c_hat) |
-| `--clip_embedding_dim` | int | 512 | CLIP 텍스트 임베딩 차원(ViT-B/32) |
+| `--clip_embedding_dim` | int | 512 | CLIP 텍스트 임베딩 차원. **512 고정**(ViT-B/32 전용 — 512가 아니면 `parse()`에서 에러) |
 | `--g_in_chans` | int | 1024 | 생성기 base 채널(Ng) |
 | `--g_out_chans` | int | 3 | 출력 채널(RGB) |
 | `--d_in_chans` | int | 64 | 판별기 base 채널(Nd) |
 | `--d_out_chans` | int | 1 | 판별기 출력 채널 |
 | `--num_stage` | int | 3 | 단계 수(해상도 64·128·256) |
-| `--clip_model` | str | `ViT-B/32` | CLIP 모델. **`ViT-B/32` 고정**(choices 제한) — 전처리·`clip_embedding_dim=512`가 모두 ViT-B/32에 고정돼 있어 다른 모델은 차원 불일치. 변경하려면 전처리 재실행 + `clip_embedding_dim` 동기화 필요 |
+| `--clip_model` | str | `ViT-B/32` | CLIP 모델. **`ViT-B/32` 고정**(choices 제한). 전처리([preprocess_dataset.py](../../preprocessing/preprocess_dataset.py) `convert_dataset`)가 ViT-B/32를 **하드코딩**하고 `clip_embedding_dim=512`라 다른 모델은 차원 불일치. 변경은 CLI 옵션만으로 불가 — 전처리 코드 수정 + 재전처리 + `clip_embedding_dim` 동기화(=코드 변경)가 필요 |
 
 > 🟢 `--gpu_ids`는 실제 디바이스 인덱스로 쓰인다(과거의 죽은 재매핑 분기 제거). 디바이스 선택은 스크립트가 담당하고 `BaseOptions`는 `set_device`를 호출하지 않는다.
 > 🟢 `--seed` 변경 시에도 SSA 블록 차원이 어긋나지 않는다(생성기가 `cond_dim`을 명시적으로 전달, [networks/generator.py](../../networks/generator.py) `Generator_type_1`).

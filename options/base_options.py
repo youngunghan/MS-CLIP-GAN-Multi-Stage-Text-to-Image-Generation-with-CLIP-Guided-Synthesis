@@ -26,7 +26,7 @@ class BaseOptions():
 
         parser.add_argument('--noise_dim', type=int, default=100, help= 'Input noise dimension to Generator')
         parser.add_argument('--condition_dim', type=int, default=128, help= 'Noise projection dimension')
-        parser.add_argument('--clip_embedding_dim', type=int, default=512, help= 'Dimension of c_txt from CLIP ViT-B/32')
+        parser.add_argument('--clip_embedding_dim', type=int, default=512, help='Dimension of c_txt from CLIP ViT-B/32 (FIXED at 512; validated in parse())')
 
         parser.add_argument('--g_in_chans', type=int, default=1024,
                             help='Number of input channels for generator (Ng)')
@@ -38,11 +38,12 @@ class BaseOptions():
                             help='Number of output channels for discriminator')
         parser.add_argument('--num_stage', type=int, default=3)
 
-        # Pipeline is hardcoded to CLIP ViT-B/32 (512-dim): preprocessing computes the stored
-        # text/image embeddings with ViT-B/32 and --clip_embedding_dim defaults to 512. Other
-        # models (e.g. ViT-L/14 = 768-dim) would mismatch the generator/contrastive dims, so the
-        # choice is restricted to ViT-B/32. To support another model you must also re-run
-        # preprocessing with it and set --clip_embedding_dim accordingly.
+        # Pipeline is fixed to CLIP ViT-B/32 (512-dim): preprocessing (preprocess_dataset.py)
+        # HARDCODES ViT-B/32 when computing the stored embeddings, and --clip_embedding_dim is 512
+        # (validated in parse()). Another model (e.g. ViT-L/14 = 768-dim) would mismatch the
+        # generator/contrastive dims. Supporting one is a CODE change — edit the hardcoded model in
+        # preprocessing/preprocess_dataset.py, re-preprocess, and match --clip_embedding_dim — not
+        # just a CLI flag, so the choice is restricted here.
         parser.add_argument('--clip_model', type=str, choices=['ViT-B/32'], default='ViT-B/32')
 
         self.initialized = True
@@ -79,6 +80,13 @@ class BaseOptions():
     def parse(self, print_options=True):
         opt = self.gather_options()
         seed_fix(opt.seed)
+
+        # Pipeline is fixed to CLIP ViT-B/32 (512-dim); guard against a mismatched embedding dim
+        # (preprocessing hardcodes ViT-B/32 → stored features are 512-d). See --clip_model.
+        if opt.clip_embedding_dim != 512:
+            error(f"--clip_embedding_dim must be 512 (CLIP ViT-B/32); got {opt.clip_embedding_dim}. "
+                  f"The pipeline is fixed to ViT-B/32 — changing it requires editing preprocessing "
+                  f"(preprocess_dataset.py) and re-preprocessing, not just this flag.")
         opt.name = opt.name + time.strftime("-%Y_%m_%d_%H_%M_%S", time.localtime())
 
         if print_options:
