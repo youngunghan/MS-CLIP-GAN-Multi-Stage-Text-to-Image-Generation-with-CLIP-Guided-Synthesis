@@ -38,8 +38,12 @@ class BaseOptions():
                             help='Number of output channels for discriminator')
         parser.add_argument('--num_stage', type=int, default=3)
 
-        parser.add_argument('--clip_model', type=str, choices=(['ViT-B/32', 'ViT-L/14', 'ViT-B/16']), default='ViT-B/32')
-        # ['RN50', 'RN101', 'RN50x4', 'RN50x16', 'RN50x64', 'ViT-B/32', 'ViT-B/16', 'ViT-L/14', 'ViT-L/14@336px']
+        # Pipeline is hardcoded to CLIP ViT-B/32 (512-dim): preprocessing computes the stored
+        # text/image embeddings with ViT-B/32 and --clip_embedding_dim defaults to 512. Other
+        # models (e.g. ViT-L/14 = 768-dim) would mismatch the generator/contrastive dims, so the
+        # choice is restricted to ViT-B/32. To support another model you must also re-run
+        # preprocessing with it and set --clip_embedding_dim accordingly.
+        parser.add_argument('--clip_model', type=str, choices=['ViT-B/32'], default='ViT-B/32')
 
         self.initialized = True
         return parser
