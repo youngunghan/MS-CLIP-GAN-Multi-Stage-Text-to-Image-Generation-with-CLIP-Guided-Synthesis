@@ -18,7 +18,8 @@ class CLIPConfig:
     
     @staticmethod
     def load_clip(model, device):
-        ''' 'B/32', 'L/14', 'B/16' '''
+        '''Load CLIP. Pipeline is fixed to ViT-B/32 (512-dim) — see options/base_options.py
+        (--clip_model is restricted to ViT-B/32 and --clip_embedding_dim is validated to 512).'''
         return clip.load(model, device=device)
     
     @staticmethod
