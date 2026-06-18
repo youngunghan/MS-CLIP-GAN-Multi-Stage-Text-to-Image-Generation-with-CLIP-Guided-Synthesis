@@ -41,6 +41,23 @@ def weight_init(layer):
         if layer.bias is not None:
             nn.init.constant_(layer.bias.data, val=0.0)
 
+@torch.no_grad()
+def ema_update(ema_model, model, decay):
+    """In-place EMA: ema = decay*ema + (1-decay)*model (params), buffers copied.
+
+    Both models are unwrapped from DataParallel first so parameter names line up.
+    Buffers (e.g. BatchNorm running stats) are copied straight across so the EMA
+    generator stays usable in eval mode.
+    """
+    ema, src = _unwrap(ema_model), _unwrap(model)
+    ema_params = dict(ema.named_parameters())
+    for name, p in src.named_parameters():
+        ema_params[name].mul_(decay).add_(p.detach(), alpha=1.0 - decay)
+    ema_bufs = dict(ema.named_buffers())
+    for name, b in src.named_buffers():
+        if name in ema_bufs:
+            ema_bufs[name].copy_(b)
+
 def mkdirs(paths):
     def mkdir(path):
         if not os.path.exists(path):

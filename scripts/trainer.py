@@ -8,7 +8,8 @@ g_losses = []
 
 def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_lst,
                loss_fn, num_stage, use_uncond_loss, use_contrastive_loss, use_mixed_loss,
-               clip_model, gamma, lam, report_interval, device, epoch, writer):
+               clip_model, gamma, lam, report_interval, device, epoch, writer,
+               g_ema=None, ema_decay=0.999, real_label_smooth=1.0, d_update_every=1):
 
     model_G.train()
     for D in model_D_lst:
@@ -16,6 +17,7 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
 
     d_loss_epoch = 0.0
     g_loss_epoch = 0.0
+    d_update_count = 0
     save_txt_feature = None
     total_iter = len(train_loader)
 
@@ -36,33 +38,40 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
         txt_feature = txt_feature.to(device)
 
         g_label = torch.ones(BATCH_SIZE, dtype=torch.float32, device=device)
-        d_real_label = torch.ones(BATCH_SIZE, dtype=torch.float32, device=device)
+        # one-sided label smoothing: real target may be < 1.0 to keep D from saturating
+        d_real_label = torch.full((BATCH_SIZE,), real_label_smooth, dtype=torch.float32, device=device)
         d_fake_label = torch.zeros(BATCH_SIZE, dtype=torch.float32, device=device)
 
         # ---------------- Phase 1: Optimize Discriminator ----------------
-        # Generate fakes under no_grad so they are detached from the generator graph.
-        noise = torch.randn(BATCH_SIZE, noise_dim, device=device)
-        with torch.no_grad():
-            fake_images, mu, log_sigma = model_G(txt_feature, noise)
-
+        # Update-ratio: update D only every `d_update_every` iters so the generator
+        # (updated every iter below) takes more steps than the discriminator (n_critic<1).
         d_loss_iter = 0.0
-        for i in range(num_stage):
-            optim_d = optim_d_lst[i]
-            optim_d.zero_grad()
+        if iter % d_update_every == 0:
+            # Generate fakes under no_grad so they are detached from the generator graph.
+            noise = torch.randn(BATCH_SIZE, noise_dim, device=device)
+            with torch.no_grad():
+                fake_images, mu, log_sigma = model_G(txt_feature, noise)
 
-            d_loss_i = D_loss(real_imgs[i], fake_images[i], model_D_lst[i], loss_fn,
-                              use_uncond_loss, use_contrastive_loss,
-                              gamma,
-                              mu, txt_feature,
-                              d_fake_label, d_real_label)
-            d_loss_i = d_scale * d_loss_i
-            d_loss_i.backward()
+            for i in range(num_stage):
+                optim_d = optim_d_lst[i]
+                optim_d.zero_grad()
 
-            torch.nn.utils.clip_grad_norm_(model_D_lst[i].parameters(), max_norm=1.0)
-            optim_d.step()
+                d_loss_i = D_loss(real_imgs[i], fake_images[i], model_D_lst[i], loss_fn,
+                                  use_uncond_loss, use_contrastive_loss,
+                                  gamma,
+                                  mu, txt_feature,
+                                  d_fake_label, d_real_label)
+                d_loss_i = d_scale * d_loss_i
+                d_loss_i.backward()
 
-            d_loss_iter += d_loss_i.item()
-            writer.add_scalar(f'D_loss/stage_{i}', d_loss_i.item(), epoch * total_iter + iter)
+                torch.nn.utils.clip_grad_norm_(model_D_lst[i].parameters(), max_norm=1.0)
+                optim_d.step()
+
+                d_loss_iter += d_loss_i.item()
+                writer.add_scalar(f'D_loss/stage_{i}', d_loss_i.item(), epoch * total_iter + iter)
+
+            d_update_count += 1
+            d_loss_epoch += d_loss_iter
 
         # ---------------- Phase 2: Optimize Generator ----------------
         optim_g.zero_grad()
@@ -89,9 +98,12 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
         torch.nn.utils.clip_grad_norm_(model_G.parameters(), max_norm=1.0)
         optim_g.step()
 
+        # EMA of the generator (updated every G step, after the optimizer step)
+        if g_ema is not None:
+            ema_update(g_ema, model_G, ema_decay)
+
         # ---------------- Logging ----------------
         g_loss_iter = g_loss.item()
-        d_loss_epoch += d_loss_iter
         g_loss_epoch += g_loss_iter
 
         writer.add_scalar('Loss/D_total', d_loss_iter, epoch * total_iter + iter)
@@ -102,7 +114,7 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
         if iter % report_interval == 0 and iter >= report_interval:
             print(f"    Iteration {iter} \t d_loss: {d_loss_iter:.4f}, g_loss: {g_loss_iter:.4f}")
 
-    d_loss_epoch /= max(total_iter, 1)
+    d_loss_epoch /= max(d_update_count, 1)
     g_loss_epoch /= max(total_iter, 1)
     d_losses.append(d_loss_epoch)
     g_losses.append(g_loss_epoch)

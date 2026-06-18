@@ -12,6 +12,7 @@ from dataset.dataloader import MM_CelebA, get_dataloader
 from networks.discriminator import Discriminator
 from networks.generator import Generator
 from utils.utils import *
+from utils.utils import _unwrap  # underscore-prefixed names are not pulled in by `import *`
 from criteria.loss import *
 from trainer import train_step
 from options.train_options import TrainOptions
@@ -73,9 +74,13 @@ if __name__ == '__main__':
         D.apply(weight_init)
         D_lst.append(D)
 
-    # Optimizer 설정
+    # Optimizer 설정 (TTUR: D can use a separate, typically smaller LR via --d_lr)
+    d_lr = args.d_lr if args.d_lr is not None and args.d_lr > 0 else lr
     optim_g = Adam(G.parameters(), lr=lr, betas=(0.5, 0.999))
-    optim_d_lst = [Adam(D.parameters(), lr=lr, betas=(0.5, 0.999)) for D in D_lst]
+    optim_d_lst = [Adam(D.parameters(), lr=d_lr, betas=(0.5, 0.999)) for D in D_lst]
+    if args.use_ema or d_lr != lr or args.real_label_smooth != 1.0:
+        print(f"Stability levers: use_ema={args.use_ema} ema_decay={args.ema_decay} "
+              f"d_lr={d_lr} (G lr={lr}) real_label_smooth={args.real_label_smooth}")
 
     # Learning rate schedulers (resume보다 먼저 생성해야 상태를 복구할 수 있다)
     scheduler_g = CosineAnnealingLR(optim_g, T_max=num_epochs)
@@ -88,6 +93,18 @@ if __name__ == '__main__':
                                          args.resume_checkpoint_path, args.resume_epoch,
                                          scheduler_g=scheduler_g, scheduler_d_lst=scheduler_d_lst)
         print('Resumed from saved checkpoint')
+
+    # EMA generator (optional): a temporal average of G, initialised from the current
+    # (possibly resumed) weights. Used for sampling and checkpointing when --use_ema.
+    G_ema = None
+    if args.use_ema:
+        G_ema = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
+                          args.clip_embedding_dim, args.num_stage, device).to(device)
+        G_ema.load_state_dict(_unwrap(G).state_dict())
+        for p in G_ema.parameters():
+            p.requires_grad_(False)
+        G_ema.eval()
+        print(f'EMA generator enabled (decay={args.ema_decay})')
 
     loss_fn = BCELoss()
     clip_model, _ = CLIPConfig.load_clip(args.clip_model, device)
@@ -105,7 +122,9 @@ if __name__ == '__main__':
             loss_fn, args.num_stage, args.use_uncond_loss, args.use_contrastive_loss,
             args.use_mixed_loss, clip_model, gamma=5, lam=10,
             report_interval=args.report_interval, device=device,
-            epoch=epoch, writer=writer
+            epoch=epoch, writer=writer,
+            g_ema=G_ema, ema_decay=args.ema_decay, real_label_smooth=args.real_label_smooth,
+            d_update_every=args.d_update_every
         )
 
         end_time = time.time()
@@ -119,20 +138,25 @@ if __name__ == '__main__':
 
         # 샘플링 및 이미지 저장 + 체크포인트
         if epoch % args.save_freq == 0:  # save_freq 마다 이미지/체크포인트 저장
-            G.eval()
+            # When EMA is on, sample AND checkpoint the EMA generator (it is always in eval mode);
+            # otherwise toggle the live G to eval for sampling and back to train afterwards.
+            sample_G = G_ema if args.use_ema else G
+            if not args.use_ema:
+                G.eval()
             with torch.no_grad():
                 z = torch.randn(txt_feature.shape[0], args.noise_dim).to(device)
                 txt_feature = txt_feature.to(device)
 
-                fake_images, _, _ = G(txt_feature, z)
+                fake_images, _, _ = sample_G(txt_feature, z)
                 fake_image = fake_images[-1].detach().cpu()
                 epoch_ret = torchvision.utils.make_grid(fake_image, padding=2, normalize=True)
                 save_path = os.path.join(str(args.result_path), f"{args.name}_epoch_{epoch}.png")
                 torchvision.utils.save_image(epoch_ret, save_path)
-            G.train()
+            if not args.use_ema:
+                G.train()
 
-            # 체크포인트 저장 (scheduler 상태 포함)
-            save_checkpoint(args, G, D_lst, optim_g, optim_d_lst, epoch, args.num_stage,
+            # 체크포인트 저장 (EMA 사용 시 EMA 가중치를 Gen.pt로 저장 → eval/infer가 EMA 모델 사용)
+            save_checkpoint(args, sample_G, D_lst, optim_g, optim_d_lst, epoch, args.num_stage,
                             scheduler_g=scheduler_g, scheduler_d_lst=scheduler_d_lst)
 
     writer.close()
