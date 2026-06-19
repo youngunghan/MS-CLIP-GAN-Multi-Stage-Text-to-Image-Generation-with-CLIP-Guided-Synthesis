@@ -9,11 +9,15 @@ g_losses = []
 def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_lst,
                loss_fn, num_stage, use_uncond_loss, use_contrastive_loss, use_mixed_loss,
                clip_model, gamma, lam, report_interval, device, epoch, writer,
-               g_ema=None, ema_decay=0.999, real_label_smooth=1.0, d_update_every=1):
+               g_ema=None, ema_decay=0.999, real_label_smooth=1.0, d_update_every=1,
+               use_diffaugment=False, diffaugment_policy='color,translation,cutout'):
 
     model_G.train()
     for D in model_D_lst:
         D.train()
+
+    # DiffAugment policy passed to D_loss/G_loss (None = off); applied to discriminator inputs only.
+    diffaug = diffaugment_policy if use_diffaugment else None
 
     d_loss_epoch = 0.0
     g_loss_epoch = 0.0
@@ -60,7 +64,7 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
                                   use_uncond_loss, use_contrastive_loss,
                                   gamma,
                                   mu, txt_feature,
-                                  d_fake_label, d_real_label)
+                                  d_fake_label, d_real_label, diffaug=diffaug)
                 d_loss_i = d_scale * d_loss_i
                 d_loss_i.backward()
 
@@ -85,7 +89,7 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
                               clip_model, gamma, lam,
                               mu, txt_feature,
                               g_label,
-                              device)
+                              device, diffaug=diffaug)
             g_loss = g_loss + g_loss_i
             writer.add_scalar(f'G_loss/stage_{i}', g_loss_i.item(), epoch * total_iter + iter)
 
