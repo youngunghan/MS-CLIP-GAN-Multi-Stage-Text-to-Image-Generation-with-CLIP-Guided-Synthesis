@@ -78,9 +78,12 @@ if __name__ == '__main__':
     d_lr = args.d_lr if args.d_lr is not None and args.d_lr > 0 else lr
     optim_g = Adam(G.parameters(), lr=lr, betas=(0.5, 0.999))
     optim_d_lst = [Adam(D.parameters(), lr=d_lr, betas=(0.5, 0.999)) for D in D_lst]
-    if args.use_ema or d_lr != lr or args.real_label_smooth != 1.0:
+    if (args.use_ema or d_lr != lr or args.real_label_smooth != 1.0
+            or args.d_update_every != 1 or args.use_diffaugment):
         print(f"Stability levers: use_ema={args.use_ema} ema_decay={args.ema_decay} "
-              f"d_lr={d_lr} (G lr={lr}) real_label_smooth={args.real_label_smooth}")
+              f"d_lr={d_lr} (G lr={lr}) real_label_smooth={args.real_label_smooth} "
+              f"d_update_every={args.d_update_every} use_diffaugment={args.use_diffaugment} "
+              f"diffaugment_policy={args.diffaugment_policy if args.use_diffaugment else '-'}")
 
     # Learning rate schedulers (resume보다 먼저 생성해야 상태를 복구할 수 있다)
     scheduler_g = CosineAnnealingLR(optim_g, T_max=num_epochs)
@@ -124,7 +127,8 @@ if __name__ == '__main__':
             report_interval=args.report_interval, device=device,
             epoch=epoch, writer=writer,
             g_ema=G_ema, ema_decay=args.ema_decay, real_label_smooth=args.real_label_smooth,
-            d_update_every=args.d_update_every
+            d_update_every=args.d_update_every,
+            use_diffaugment=args.use_diffaugment, diffaugment_policy=args.diffaugment_policy
         )
 
         end_time = time.time()

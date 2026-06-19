@@ -8,6 +8,7 @@ from torchvision import models
 from config.config import CLIPConfig
 #from utils.utils import normalize
 from utils.utils import *
+from criteria.diffaugment import DiffAugment
 
 def gather_all(dicts) -> float:
     """Sum all values in dictionary"""
@@ -115,9 +116,14 @@ def D_loss(real_image, fake_image, model_D, loss_fn,
                use_uncond_loss, use_contrastive_loss,
                gamma,
                mu, txt_feature,
-               d_fake_label, d_real_label):
+               d_fake_label, d_real_label, diffaug=None):
 
     loss_d_comp = {}
+
+    # DiffAugment: the discriminator sees the SAME differentiable transform on real and fake.
+    if diffaug:
+        real_image = DiffAugment(real_image, policy=diffaug)
+        fake_image = DiffAugment(fake_image, policy=diffaug)
 
     d_out_cond, d_out_align_fake = model_D(img=fake_image, condition=mu,)
     loss_d_comp["d_loss_fake_cond"] = loss_fn(d_out_cond, d_fake_label)
@@ -164,15 +170,19 @@ def G_loss(real_image, fake_image, model_D, loss_fn,
            clip_model, gamma, lam,
            mu, txt_feature,
            g_label,
-           device):
+           device, diffaug=None):
 
     loss_g_comp = {}
 
-    g_out_cond, g_out_align = model_D(img=fake_image, condition=mu,)
+    # DiffAugment only the discriminator's view of the fake (gradients still flow to G);
+    # the CLIP (contrastive_loss_G) and VGG (mixed_loss) terms below use the RAW fake.
+    fake_for_d = DiffAugment(fake_image, policy=diffaug) if diffaug else fake_image
+
+    g_out_cond, g_out_align = model_D(img=fake_for_d, condition=mu,)
     loss_g_comp["g_loss_cond"] = loss_fn(g_out_cond, g_label)
 
     if use_uncond_loss:
-        g_out_uncond, _ = model_D(img=fake_image, condition=None,)
+        g_out_uncond, _ = model_D(img=fake_for_d, condition=None,)
         loss_g_comp["g_loss_uncond"] = loss_fn(g_out_uncond, g_label)
 
     if use_contrastive_loss:

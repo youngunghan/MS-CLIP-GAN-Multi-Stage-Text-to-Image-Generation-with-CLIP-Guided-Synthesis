@@ -4,6 +4,7 @@ Usage:
   python experiments/plot_compare.py <out.png> "label1=path/to/eval.json" "label2=..." ...
 """
 import json, sys
+from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -23,7 +24,12 @@ for i, spec in enumerate(specs):
              label=f"{label}  (best {res[str(best)]['fid']:.0f} @ ep{best})")
 
 plt.xlabel("epoch"); plt.ylabel("standard FID (2048-d pool3, lower = better)")
-plt.title("MS-CLIP-GAN — D-weakening sweep vs baseline (25% subset, 2490 imgs)")
+out_name = Path(out).name.lower()
+if "diffaug" in out_name:
+    title = "MS-CLIP-GAN — DiffAugment vs baseline (25% subset, 2490 imgs)"
+else:
+    title = "MS-CLIP-GAN — D-weakening sweep vs baseline (25% subset, 2490 imgs)"
+plt.title(title)
 plt.legend(fontsize=9); plt.grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(out, dpi=130)
 print("saved", out)
