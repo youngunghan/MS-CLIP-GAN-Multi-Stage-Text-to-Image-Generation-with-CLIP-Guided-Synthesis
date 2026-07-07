@@ -22,8 +22,8 @@
 | 스크립트 | 인자 | 설명 |
 |---|---|---|
 | [train.sh](../../train.sh) | (내부 변수) | `GPUS`·`BS`·`LR`·`EPOCH`·`SAVE_FREQ` 편집. resume는 하단 주석 |
-| [infer.sh](../../infer.sh) | `[CKPT_DIR] [EPOCH]` | `CKPT_DIR`에 `epoch_<E>_Gen.pt` 필요. `--prompt`로 프롬프트 |
-| [eval.sh](../../eval.sh) | `[CKPT_DIR] [EPOCH]` | `--eval_data_path ./data/testset.zip` |
+| [infer.sh](../../infer.sh) | `<CKPT_DIR> [EPOCH]` | `CKPT_DIR`은 **필수**(생략 시 usage 출력 후 `exit 1`)이며 `epoch_<E>_Gen.pt`가 있어야 함. `EPOCH` 기본값 149. `--prompt`로 프롬프트 |
+| [eval.sh](../../eval.sh) | `<CKPT_DIR> [EPOCH]` | `CKPT_DIR`은 **필수**(생략 시 usage 출력 후 `exit 1`). `EPOCH` 기본값 149. `--eval_data_path ./data/testset.zip` |
 | [preprocessing/split_dataset.sh](../../preprocessing/split_dataset.sh) | (내부) | `--source_path`·`--train_ratio`·`--seed` |
 | [preprocessing/preprocess_train.sh](../../preprocessing/preprocess_train.sh) | (내부) | train zip 생성 |
 | [preprocessing/preprocess_test.sh](../../preprocessing/preprocess_test.sh) | (내부) | test zip 생성 |
@@ -33,6 +33,7 @@
 ## 3. 출력 경로 규약
 
 - 학습: `checkpoints/<name-timestamp>/ckpt/epoch_<E>_Gen.pt`·`epoch_<E>_Dis_{0,1,2}.pt`, `checkpoints/<name-timestamp>/res/<name>_epoch_<E>.png`.
+- `--use_ema`가 설정되면 `epoch_<E>_Gen.pt`에는 EMA 가중치가, 함께 저장되는 동반 파일 `epoch_<E>_Gen_raw.pt`에는 학습 중이던(raw) 생성기 가중치가 들어간다. eval/infer는 기본적으로 `Gen.pt`(EMA)를 로드한다([utils/utils.py](../../utils/utils.py) `save_checkpoint()`).
 - 추론/평가: 기본 `./output/`(`infer`/`eval`은 `parse(print_options=False)`로 실험 디렉터리/`opt.txt`를 만들지 않음).
 
 ## 관련 문서

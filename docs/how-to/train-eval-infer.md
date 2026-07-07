@@ -23,7 +23,7 @@ bash train.sh
 | `--learning_rate` | 1e-4 | Adam lr(β=0.5,0.999) |
 | `--num_epochs` | 150 | 에폭 수 |
 | `--save_freq` | 5 | 저장 주기(에폭) |
-| `--use_uncond_loss` / `--use_contrastive_loss` / `--use_mixed_loss` | off | 보조 손실 토글 |
+| `--use_uncond_loss` / `--use_contrastive_loss` / `--use_mixed_loss` | argparse 기본은 off, `train.sh`는 3개 모두 on | 보조 손실 토글 |
 | `--seed` | 42 | 재현성 시드 |
 
 ## 2. 학습 (다중 GPU)
@@ -48,8 +48,8 @@ python scripts/train.py ... \
 ## 4. 평가 (FID / IS / CLIP score)
 
 ```bash
-# ./eval.sh [CKPT_DIR] [EPOCH]
-bash eval.sh ./checkpoints/<run_name>/ckpt 99
+# ./eval.sh <CKPT_DIR> [EPOCH]   — CKPT_DIR은 필수(생략 시 usage 출력 후 exit 1)
+bash eval.sh ./checkpoints/<run_name>/ckpt 149
 ```
 
 [scripts/eval.py](../../scripts/eval.py) `evaluate()`는:
@@ -63,8 +63,8 @@ bash eval.sh ./checkpoints/<run_name>/ckpt 99
 ## 5. 추론
 
 ```bash
-# ./infer.sh [CKPT_DIR] [EPOCH]
-bash infer.sh ./checkpoints/<run_name>/ckpt 99
+# ./infer.sh <CKPT_DIR> [EPOCH]   — CKPT_DIR은 필수(생략 시 usage 출력 후 exit 1)
+bash infer.sh ./checkpoints/<run_name>/ckpt 149
 ```
 
 [scripts/infer.py](../../scripts/infer.py)는 프롬프트를 CLIP `encode_text`로 임베딩 → 정규화 → `Generator`에 z와 함께 통과 → 단계별 이미지를 `./output/result_{64,128,256}.png`로 저장. `G.eval()` 적용, 생성기 체크포인트만 필요.

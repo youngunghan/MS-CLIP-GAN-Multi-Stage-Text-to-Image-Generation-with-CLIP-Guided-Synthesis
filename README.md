@@ -150,7 +150,9 @@ Execute an evaluation script to start the evaluation process:
 
 2. **Run the evaluation script:**
    ```bash
-   ./eval.sh
+   # ./eval.sh <CKPT_DIR> [EPOCH]
+   # CKPT_DIR (required) is the directory containing epoch_<EPOCH>_Gen.pt
+   ./eval.sh ./checkpoints/<run_name>/ckpt 149
    ```
 
 This will start the evaluation process using the specified parameters.
@@ -175,9 +177,9 @@ Create and execute an inference script to generate images from text:
 
 2. **Run the inference script:**
    ```bash
-   # ./infer.sh [CKPT_DIR] [EPOCH]
-   # CKPT_DIR is the directory containing epoch_<EPOCH>_Gen.pt
-   ./infer.sh ./checkpoints/<run_name>/ckpt 99
+   # ./infer.sh <CKPT_DIR> [EPOCH]
+   # CKPT_DIR (required) is the directory containing epoch_<EPOCH>_Gen.pt
+   ./infer.sh ./checkpoints/<run_name>/ckpt 149
    ```
 
 This will generate images based on the provided text descriptions using the specified checkpoint.
