@@ -9,6 +9,7 @@
 - [how-to/prepare-dataset.md](how-to/prepare-dataset.md) : MM-CelebA-HQ 분할·CLIP 피처 전처리 → train/test zip
 - [how-to/train-eval-infer.md](how-to/train-eval-infer.md) : 학습(단일/다중 GPU·resume)·평가·추론 실행
 - [how-to/troubleshooting.md](how-to/troubleshooting.md) : 증상별 문제 해결
+- [how-to/run-experiments.md](how-to/run-experiments.md) : experiments/ 서브셋 실험(데이터 준비·학습·FID/IS 곡선·플롯); 결과는 experiments/RESULTS.md
 
 ## reference
 - [reference/configuration.md](reference/configuration.md) : CLI 옵션·버전 핀·하이퍼파라미터

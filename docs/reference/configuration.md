@@ -43,10 +43,17 @@
 | `--num_epochs` | int | 50 | `train.sh`는 150 |
 | `--learning_rate` | float | 2e-4 | `train.sh`는 1e-4 (Adam β=0.5,0.999) |
 | `--save_freq` | int | 1 | 저장 주기(에폭) |
-| `--use_uncond_loss` | flag | off | 무조건 판별 손실 |
-| `--use_contrastive_loss` | flag | off | 정렬/CLIP 대조 손실 |
-| `--use_mixed_loss` | flag | off | L1+VGG perceptual 혼합 손실 |
+| `--use_uncond_loss` | flag | argparse 기본 off — **`train.sh`는 on** | 무조건 판별 손실 |
+| `--use_contrastive_loss` | flag | argparse 기본 off — **`train.sh`는 on** | 정렬/CLIP 대조 손실 |
+| `--use_mixed_loss` | flag | argparse 기본 off — **`train.sh`는 on** | L1+VGG perceptual 혼합 손실 |
 | `--new_optim` | flag | off | resume 시 optimizer/scheduler 새로 시작 |
+| `--d_lr` | float | -1.0 | 판별기 LR(TTUR). `<=0`이면 `--learning_rate`를 D에도 그대로 사용 |
+| `--use_ema` | flag | off | 생성기 가중치의 EMA를 추적하고, 샘플링/체크포인트에 EMA 모델을 사용 |
+| `--ema_decay` | float | 0.999 | 생성기 EMA decay |
+| `--real_label_smooth` | float | 1.0 | 판별기의 real 라벨 타깃(예: 0.9 = 단측 라벨 스무딩) |
+| `--d_update_every` | int | 1 | G 스텝 N번마다 D를 1번 업데이트(N>1이면 D를 약화, 즉 n_critic<1) |
+| `--use_diffaugment` | flag | off | 판별기 입력의 real/fake 양쪽에 DiffAugment(미분 가능 증강) 적용 |
+| `--diffaugment_policy` | str | `color,translation,cutout` | DiffAugment 정책(콤마 구분, `color`/`translation`/`cutout`의 부분집합) |
 
 ## 3. 테스트/추론 옵션 (TestOptions)
 
@@ -59,6 +66,7 @@
 | `--eval_data_path` | str | (필수) | 평가 zip(infer는 더미 `None` 전달) |
 | `--batch_size` | int | 16 | 평가 배치 |
 | `--print_freq` | int | 10 | 평가 로그 주기 |
+| `--max_batches` | int | -1 | 평가 배치 수 상한. `-1` = 전체 평가셋 사용(FID는 표본이 많이 필요) |
 
 ## 4. 의존성 (environment.yml 기준)
 

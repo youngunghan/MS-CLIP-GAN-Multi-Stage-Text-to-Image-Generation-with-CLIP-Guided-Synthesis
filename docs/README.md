@@ -17,6 +17,7 @@ CLIP 텍스트 임베딩을 조건으로 64→128→256 해상도를 단계적�
 | [how-to/prepare-dataset.md](how-to/prepare-dataset.md) | MM-CelebA-HQ 분할 → CLIP 피처 추출 전처리 → `trainset.zip`/`testset.zip` |
 | [how-to/train-eval-infer.md](how-to/train-eval-infer.md) | 학습(단일/다중 GPU·resume)·평가(FID/IS/CLIP)·추론 실행 |
 | [how-to/troubleshooting.md](how-to/troubleshooting.md) | 증상별 문제 해결(OOM·체크포인트 로드·CLIP·데이터 경로) |
+| [how-to/run-experiments.md](how-to/run-experiments.md) | `experiments/` 서브셋 실험 워크플로(데이터 준비→학습→FID/IS 곡선→플롯); 결과는 `experiments/RESULTS.md` |
 
 ### reference — 조회용 명세
 

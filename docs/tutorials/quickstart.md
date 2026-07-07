@@ -54,8 +54,8 @@ bash train.sh
 ## 5. 추론 (텍스트 → 이미지)
 
 ```bash
-# ./infer.sh [CKPT_DIR] [EPOCH]   — CKPT_DIR은 epoch_<E>_Gen.pt 가 있는 디렉터리
-bash infer.sh ./checkpoints/<run_name>/ckpt 99
+# ./infer.sh <CKPT_DIR> [EPOCH]   — CKPT_DIR(필수)은 epoch_<E>_Gen.pt 가 있는 디렉터리
+bash infer.sh ./checkpoints/<run_name>/ckpt 149
 ```
 
 - 프롬프트는 `infer.sh`의 `--prompt`로 지정. 결과는 `./output/result_64.png`·`result_128.png`·`result_256.png`.
