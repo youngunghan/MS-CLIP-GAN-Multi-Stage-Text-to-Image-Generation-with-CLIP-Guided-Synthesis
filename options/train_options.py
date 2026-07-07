@@ -1,4 +1,4 @@
-from .base_options import BaseOptions
+from .base_options import BaseOptions, str2bool
 
 class TrainOptions(BaseOptions):
     def initialize(self, parser):  
@@ -23,9 +23,9 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--d_update_every', type=int, default=1,
                             help='Update D once every N generator steps (N>1 weakens D, i.e. n_critic<1).')
         parser.add_argument('--use_diffaugment', action='store_true',
-                            help='Apply DiffAugment (same differentiable aug on BOTH real and fake) at the discriminator.')
+                            help='Apply DiffAugment (differentiable aug on BOTH real and fake) at the discriminator.')
         parser.add_argument('--diffaugment_policy', type=str, default='color,translation,cutout',
                             help='DiffAugment policy (comma-separated subset of color,translation,cutout).')
 
-        parser.add_argument('--is_train', type=bool, default=True, choices=([True, False]))
+        parser.add_argument('--is_train', type=str2bool, default=True, choices=([True, False]))
         return parser

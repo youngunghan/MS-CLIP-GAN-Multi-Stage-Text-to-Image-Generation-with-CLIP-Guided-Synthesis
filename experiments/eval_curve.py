@@ -21,6 +21,10 @@ from networks.generator import Generator
 TEST_ZIP, CKPT_DIR, EPOCH_ARG, OUT = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 BS = 32
+# Fixed seed so the noise draws (and thus FID/IS on a ~500-image test set) are
+# reproducible and comparable across runs. Curves committed before this seed existed
+# carry a small run-to-run noise component.
+torch.manual_seed(42)
 
 if EPOCH_ARG == "auto":
     eps = sorted(int(os.path.basename(p).split("_")[1])

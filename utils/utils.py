@@ -103,11 +103,15 @@ def _move_optim_state_to_device(optim, device):
 
 def save_checkpoint(args, g: torch.nn.Module, d_lst: List[torch.nn.Module],
                 optim_g, optim_d_lst, epoch: int, num_stage: int,
-                scheduler_g=None, scheduler_d_lst=None) -> None:
+                scheduler_g=None, scheduler_d_lst=None, g_raw=None) -> None:
     """Save generator and discriminator models (always unwrapping DataParallel).
 
     Optimizer AND LR-scheduler states are stored so that resume continues the
     learning-rate schedule from the correct epoch instead of restarting it.
+
+    EMA runs pass the EMA model as `g` (so Gen.pt is what eval/infer should load)
+    and the live training generator as `g_raw`; without the extra Gen_raw.pt file,
+    resume would restart training from the time-averaged weights.
     """
     # Save generator
     generator_state = {
@@ -119,6 +123,10 @@ def save_checkpoint(args, g: torch.nn.Module, d_lst: List[torch.nn.Module],
     }
     torch.save(generator_state,
               os.path.join(args.checkpoint_path, f"epoch_{epoch}_Gen.pt"))
+
+    if g_raw is not None:
+        torch.save({'model': _unwrap(g_raw).state_dict(), 'epoch': epoch, 'num_stage': num_stage},
+                   os.path.join(args.checkpoint_path, f"epoch_{epoch}_Gen_raw.pt"))
 
     # Save discriminators
     for i, (disc, optim_d) in enumerate(zip(d_lst, optim_d_lst)):
@@ -137,12 +145,14 @@ def save_checkpoint(args, g: torch.nn.Module, d_lst: List[torch.nn.Module],
 
 def load_checkpoint(args, g: torch.nn.Module, d_lst: List[torch.nn.Module],
                optim_g, optim_d_lst: List[torch.optim.Optimizer], checkpoint_path, epoch: int,
-               scheduler_g=None, scheduler_d_lst=None) -> tuple:
+               scheduler_g=None, scheduler_d_lst=None, g_ema=None) -> tuple:
     """Load generator and (optionally) discriminator models with optimizers/schedulers.
 
     - Handles checkpoints saved with or without a 'module.' prefix.
     - Restores optimizer AND LR-scheduler state when training (so resume continues the schedule).
     - During inference, d_lst entries are None and discriminator files are not required.
+    - EMA checkpoints store the EMA weights in Gen.pt and the live training weights in
+      Gen_raw.pt: when training, the raw weights go into `g` and Gen.pt seeds `g_ema`.
     """
     device = next(g.parameters()).device
 
@@ -152,7 +162,21 @@ def load_checkpoint(args, g: torch.nn.Module, d_lst: List[torch.nn.Module],
         raise FileNotFoundError(f"No generator checkpoint found at {gen_path}")
 
     gen_state = _safe_torch_load(gen_path, device)
-    _unwrap(g).load_state_dict(_strip_module_prefix(gen_state['model']))
+    raw_path = os.path.join(checkpoint_path, f"epoch_{epoch}_Gen_raw.pt")
+    if args.is_train and os.path.exists(raw_path):
+        raw_state = _safe_torch_load(raw_path, device)
+        _unwrap(g).load_state_dict(_strip_module_prefix(raw_state['model']))
+        if g_ema is not None:
+            _unwrap(g_ema).load_state_dict(_strip_module_prefix(gen_state['model']))
+        else:
+            print('Note: EMA checkpoint resumed without --use_ema; training continues '
+                  'from the raw weights and the saved EMA average is dropped.')
+    else:
+        _unwrap(g).load_state_dict(_strip_module_prefix(gen_state['model']))
+        if g_ema is not None:
+            # Non-EMA checkpoint (or one predating Gen_raw.pt): restart the average
+            # from the loaded weights.
+            _unwrap(g_ema).load_state_dict(_unwrap(g).state_dict())
     num_stage = gen_state['num_stage']
 
     if args.is_train and not args.new_optim:

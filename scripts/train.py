@@ -90,15 +90,9 @@ if __name__ == '__main__':
     scheduler_d_lst = [CosineAnnealingLR(optim_d, T_max=num_epochs)
                       for optim_d in optim_d_lst]
 
-    # 체크포인트 로드 (optimizer + scheduler 상태까지 복구)
-    if args.resume_checkpoint_path is not None and args.resume_epoch != -1:
-        epoch, num_stage = load_checkpoint(args, G, D_lst, optim_g, optim_d_lst,
-                                         args.resume_checkpoint_path, args.resume_epoch,
-                                         scheduler_g=scheduler_g, scheduler_d_lst=scheduler_d_lst)
-        print('Resumed from saved checkpoint')
-
-    # EMA generator (optional): a temporal average of G, initialised from the current
-    # (possibly resumed) weights. Used for sampling and checkpointing when --use_ema.
+    # EMA generator (optional): a temporal average of G. Built BEFORE resume so that
+    # load_checkpoint can restore the saved EMA weights into it (EMA checkpoints keep
+    # the EMA weights in Gen.pt and the live training weights in Gen_raw.pt).
     G_ema = None
     if args.use_ema:
         G_ema = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
@@ -108,6 +102,20 @@ if __name__ == '__main__':
             p.requires_grad_(False)
         G_ema.eval()
         print(f'EMA generator enabled (decay={args.ema_decay})')
+
+    # 체크포인트 로드 (optimizer + scheduler 상태까지 복구).
+    # path/epoch 중 하나만 지정하면 아무것도 로드하지 않은 채 resume_epoch+1부터 도는
+    # 잘못된 런이 조용히 만들어지므로, 반쪽 지정은 즉시 에러로 막는다.
+    if (args.resume_checkpoint_path is None) != (args.resume_epoch == -1):
+        raise ValueError(
+            '--resume_checkpoint_path and --resume_epoch must be given together to resume '
+            f'(got path={args.resume_checkpoint_path}, epoch={args.resume_epoch})')
+    if args.resume_checkpoint_path is not None and args.resume_epoch != -1:
+        epoch, num_stage = load_checkpoint(args, G, D_lst, optim_g, optim_d_lst,
+                                         args.resume_checkpoint_path, args.resume_epoch,
+                                         scheduler_g=scheduler_g, scheduler_d_lst=scheduler_d_lst,
+                                         g_ema=G_ema)
+        print('Resumed from saved checkpoint')
 
     loss_fn = BCELoss()
     clip_model, _ = CLIPConfig.load_clip(args.clip_model, device)
@@ -140,8 +148,9 @@ if __name__ == '__main__':
         for scheduler_d in scheduler_d_lst:
             scheduler_d.step()
 
-        # 샘플링 및 이미지 저장 + 체크포인트
-        if epoch % args.save_freq == 0:  # save_freq 마다 이미지/체크포인트 저장
+        # 샘플링 및 이미지 저장 + 체크포인트 (save_freq 마다 + 마지막 epoch —
+        # save_freq의 배수가 아니면 학습 마지막 구간이 통째로 버려지는 것을 방지)
+        if epoch % args.save_freq == 0 or epoch == num_epochs - 1:
             # When EMA is on, sample AND checkpoint the EMA generator (it is always in eval mode);
             # otherwise toggle the live G to eval for sampling and back to train afterwards.
             sample_G = G_ema if args.use_ema else G
@@ -159,8 +168,10 @@ if __name__ == '__main__':
             if not args.use_ema:
                 G.train()
 
-            # 체크포인트 저장 (EMA 사용 시 EMA 가중치를 Gen.pt로 저장 → eval/infer가 EMA 모델 사용)
+            # 체크포인트 저장 (EMA 사용 시 EMA 가중치를 Gen.pt로 → eval/infer가 EMA 모델 사용,
+            # 라이브 G는 Gen_raw.pt로 → resume이 실제 학습 가중치에서 이어짐)
             save_checkpoint(args, sample_G, D_lst, optim_g, optim_d_lst, epoch, args.num_stage,
-                            scheduler_g=scheduler_g, scheduler_d_lst=scheduler_d_lst)
+                            scheduler_g=scheduler_g, scheduler_d_lst=scheduler_d_lst,
+                            g_raw=G if args.use_ema else None)
 
     writer.close()
