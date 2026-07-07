@@ -21,9 +21,12 @@ else
   conda run -n $DL_ENV python experiments/dl_real_scaled.py "$N"
 fi
 
-echo "[2/4] split (train_ratio=$RATIO, seed=42) ..."
+echo "[2/4] split (train_ratio=$RATIO, seed=42, max_images=$N) ..."
+# --max_images enforces N even when image.zip holds more (e.g. left over from a larger
+# prep run); without it the "subset" would silently contain every downloaded image.
 conda run -n $ENV python preprocessing/split_dataset.py \
-    --source_path ./data/mm-celeba-hq-dataset --train_ratio "$RATIO" --seed 42
+    --source_path ./data/mm-celeba-hq-dataset --train_ratio "$RATIO" --seed 42 \
+    --max_images "$N"
 
 echo "[3/4] preprocess train -> data/trainset_${TAG}.zip ..."
 conda run -n $ENV python preprocessing/preprocess_dataset.py \

@@ -1,10 +1,16 @@
 #!/bin/bash
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
-# Usage: ./infer.sh [CKPT_DIR] [EPOCH]
+# Usage: ./infer.sh <CKPT_DIR> [EPOCH]
 # CKPT_DIR must contain epoch_<EPOCH>_Gen.pt (discriminator checkpoints are NOT required).
-CKPT_DIR=${1:-./checkpoints/<run_name>/ckpt}
-EPOCH=${2:-99}
+# Default EPOCH=149 matches train.sh's defaults (150 epochs; final epoch always saved).
+if [ -z "$1" ]; then
+  echo "Usage: ./infer.sh <CKPT_DIR> [EPOCH]" >&2
+  echo "  e.g. ./infer.sh ./checkpoints/<run_name>/ckpt 149" >&2
+  exit 1
+fi
+CKPT_DIR=$1
+EPOCH=${2:-149}
 
 python scripts/infer.py \
     --prompt "The woman is young and has blond hair, and arched eyebrows." \

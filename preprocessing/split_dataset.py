@@ -32,7 +32,7 @@ def get_all_image_files(source_path):
 
     return sorted(image_files)
 
-def split_dataset(source_path, train_ratio=0.8, seed=42):
+def split_dataset(source_path, train_ratio=0.8, seed=42, max_images=None):
     """Split dataset into train and test sets"""
     # Set random seed for reproducibility
     random.seed(seed)
@@ -40,6 +40,14 @@ def split_dataset(source_path, train_ratio=0.8, seed=42):
     # Get all image files
     all_files = get_all_image_files(source_path)
     print(f"Total number of images found: {len(all_files)}")
+
+    # Cap BEFORE shuffling. The list is sorted and the HF downloader writes the first
+    # N samples in order, so sorted[:N] equals what a fresh N-image download would
+    # contain. Without this cap, an image.zip left over from a larger prep silently
+    # inflates the split (e.g. a "3000-image subset" becomes all 10000 images).
+    if max_images is not None and max_images > 0 and len(all_files) > max_images:
+        all_files = all_files[:max_images]
+        print(f"Capped to the first {max_images} images (--max_images)")
 
     # Shuffle the files
     random.shuffle(all_files)
@@ -81,7 +89,9 @@ if __name__ == "__main__":
                         help='Ratio of training data (default: 0.8)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility (default: 42)')
+    parser.add_argument('--max_images', type=int, default=None,
+                        help='Use only the first N images (sorted order) before splitting')
 
     args = parser.parse_args()
 
-    split_dataset(args.source_path, args.train_ratio, args.seed)
+    split_dataset(args.source_path, args.train_ratio, args.seed, args.max_images)

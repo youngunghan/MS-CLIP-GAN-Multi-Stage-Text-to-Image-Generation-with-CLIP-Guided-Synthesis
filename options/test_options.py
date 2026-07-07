@@ -1,4 +1,4 @@
-from .base_options import BaseOptions
+from .base_options import BaseOptions, str2bool
 
 class TestOptions(BaseOptions):
     def initialize(self, parser):
@@ -10,6 +10,8 @@ class TestOptions(BaseOptions):
         parser.add_argument('--eval_data_path', type=str, required=True)
         parser.add_argument('--batch_size', type=int, default=16)
         parser.add_argument('--print_freq', type=int, default=10)
+        parser.add_argument('--max_batches', type=int, default=-1,
+                            help='Cap on eval batches; -1 = the whole eval set (FID needs many samples).')
 
-        parser.add_argument('--is_train', type=bool, default=False, choices=([True, False]))
+        parser.add_argument('--is_train', type=str2bool, default=False, choices=([True, False]))
         return parser

@@ -4,6 +4,17 @@ import time
 from pathlib import Path
 from utils.utils import *
 
+def str2bool(v):
+    """argparse type for real booleans — plain type=bool would parse '--flag False' as True."""
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('true', '1', 'yes'):
+        return True
+    if v.lower() in ('false', '0', 'no'):
+        return False
+    raise argparse.ArgumentTypeError(f'boolean value expected, got {v!r}')
+
+
 class BaseOptions():
     def __init__(self):
         self.initialized = False

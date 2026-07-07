@@ -42,3 +42,6 @@ UTIL=$(awk -F, '{gsub(/ /,"",$2);s+=$2;n++}END{if(n)printf "%.0f",s/n}' "$GPU_LO
   echo "avg_util_pct=$UTIL"
 } | tee "$META"
 echo "TRAIN_DONE name=$NAME rc=$RC"
+# Propagate the training exit code — without this the script always exits 0 (the last
+# echo's status) and run_all.sh's `|| exit 1` guard can never fire on a crashed run.
+exit "${RC:-1}"

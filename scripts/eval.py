@@ -12,7 +12,7 @@ from criteria.metric import (
 
 
 @torch.no_grad()
-def evaluate(args, G, clip_model, device, dataloader, max_batches=50):
+def evaluate(args, G, clip_model, device, dataloader, max_batches=-1):
     G.eval()
     clip_model.eval()
 
@@ -25,7 +25,7 @@ def evaluate(args, G, clip_model, device, dataloader, max_batches=50):
     n_samples = 0
 
     for i, (real_imgs, _, txt_embedding) in enumerate(dataloader):
-        if i >= max_batches:
+        if 0 <= max_batches <= i:
             break
 
         batch_size = txt_embedding.size(0)
@@ -108,7 +108,7 @@ def main():
     eval_loader = get_dataloader(args=args, dataset=eval_dataset, is_train=False)
 
     mkdirs(str(args.result_path))
-    metrics = evaluate(args, G, clip_model, device, eval_loader)
+    metrics = evaluate(args, G, clip_model, device, eval_loader, max_batches=args.max_batches)
 
     if metrics is not None:
         save_metrics_to_csv(args, metrics)
