@@ -113,7 +113,8 @@ Execute the training script to start the training process:
 
 1. **Run the training script:**
    ```bash
-   # BS=4 measured about 5.8–6.2 GB on an RTX 4060 Ti 8 GB.
+   # Default is BS=64 (quality-first). On an 8 GB card (e.g. RTX 4060 Ti),
+   # lower BS in train.sh to 4, which measured about 5.8-6.2 GB.
    bash train.sh
    ```
 

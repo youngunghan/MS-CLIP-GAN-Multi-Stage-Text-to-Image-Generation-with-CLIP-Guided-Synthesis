@@ -13,7 +13,7 @@
 bash train.sh
 ```
 
-[train.sh](../../train.sh)는 8 GB에서 확인한 batch 4, 3단계 64/128/256, lr 1e-4,
+[train.sh](../../train.sh)는 batch 64(기본), 3단계 64/128/256, lr 1e-4,
 150 epoch, GPU 0으로 실행한다. 핵심 기본 동작은 다음과 같다.
 
 | 항목 | `train.sh` 계약 |
@@ -27,8 +27,9 @@ bash train.sh
 | sample/log | `res/`, `runs/<name-timestamp>/`, `opt.txt` |
 | 저장 시점 | `save_freq` 주기 + 마지막 epoch 강제 저장 |
 
-8 GB에서 batch 4가 약 5.8~6.2 GB였으며 다른 모델·driver·loss 조합에서는 달라질
-수 있다. 먼저 epoch 수를 줄인 smoke run으로 확인한다. `batch_size=1`은 argparse
+기본 batch 64는 8 GB급 GPU에는 맞지 않는다. RTX 4060 Ti 8 GB에서는 `train.sh`의
+`BS`를 4로 낮추면 약 5.8~6.2 GB를 사용했다(다른 모델·driver·loss 조합에서는 달라질
+수 있다). 먼저 epoch 수를 줄인 smoke run으로 확인한다. `batch_size=1`은 argparse
 기본일 뿐, contrastive를 켠 학습에는 허용되지 않는다.
 
 직접 옵션을 조합할 때의 최소 예시는 다음과 같다.
@@ -37,7 +38,7 @@ bash train.sh
 PYTHONPATH=. python scripts/train.py \
   --name fresh \
   --data_path ./data/trainset.zip \
-  --batch_size 4 \
+  --batch_size 64 \
   --num_epochs 150 \
   --learning_rate 1e-4 \
   --save_freq 5 \
@@ -74,7 +75,7 @@ resume에는 원래 run의 `opt.txt`를 참고해 **전체 학습 명령**을 �
 PYTHONPATH=. python scripts/train.py \
   --name resumed-exact \
   --data_path ./data/trainset.zip \
-  --batch_size 4 \
+  --batch_size 64 \
   --num_epochs 150 \
   --learning_rate 1e-4 \
   --save_freq 5 \
@@ -107,7 +108,7 @@ PYTHONPATH=. python scripts/train.py \
 PYTHONPATH=. python scripts/train.py \
   --name extended \
   --data_path ./data/trainset.zip \
-  --batch_size 4 \
+  --batch_size 64 \
   --num_epochs 200 \
   --learning_rate 1e-4 \
   --save_freq 5 \
