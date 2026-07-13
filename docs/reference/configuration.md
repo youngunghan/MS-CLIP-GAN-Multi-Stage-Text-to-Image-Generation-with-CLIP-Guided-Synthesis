@@ -47,7 +47,7 @@
 
 | 옵션 | 타입 | 기본값 | 비고 |
 |---|---|---|---|
-| `--batch_size` | int | 1 | `train.sh`는 4. contrastive 사용 시 2 이상 필수 |
+| `--batch_size` | int | 1 | `train.sh`는 64(8 GB급 GPU는 4로 낮춤). contrastive 사용 시 2 이상 필수 |
 | `--num_epochs` | int | 50 | `train.sh`는 150 |
 | `--learning_rate` | float | 2e-4 | `train.sh`는 1e-4 (Adam β=0.5,0.999) |
 | `--save_freq` | int | 1 | 저장 주기(에폭) |

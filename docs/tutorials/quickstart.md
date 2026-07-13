@@ -8,7 +8,7 @@
 
 | 항목 | 요구 | 비고 |
 |---|---|---|
-| GPU | NVIDIA, VRAM ≥ 8GB 권장 | RTX 4060 Ti 8 GB에서 batch 4가 약 5.8~6.2 GB였음. CPU fallback은 매우 느림 |
+| GPU | NVIDIA, 기본 BS=64는 대형 GPU 필요 | 8 GB급 카드(예: RTX 4060 Ti)는 `train.sh`의 `BS`를 4로 낮춘다 — 약 5.8~6.2 GB 실측. CPU fallback은 매우 느림 |
 | Conda | 권장 | `environment.yml` 제공 |
 | 데이터 | MM-CelebA-HQ | 이미지+캡션, [how-to/prepare-dataset.md](../how-to/prepare-dataset.md) |
 
@@ -45,7 +45,7 @@ bash preprocessing/preprocess_test.sh      # → data/testset.zip
 bash train.sh
 ```
 
-- 기본값: 3단계(64/128/256), **batch 4**, lr 1e-4, 150 epoch, `--gpu_ids 0`. 8 GB에서 확인한 값이며 GPU가 다르면 먼저 1-epoch smoke run으로 조정한다.
+- 기본값: 3단계(64/128/256), **batch 64**, lr 1e-4, 150 epoch, `--gpu_ids 0`. 8 GB급 GPU는 `train.sh`의 `BS`를 4로 낮춘다(약 5.8~6.2 GB 실측, RTX 4060 Ti). GPU가 다르면 먼저 1-epoch smoke run으로 조정한다.
 - 정상 신호: D/G 손실이 발산하지 않고, `runs/<name>`에 TensorBoard 로그, `checkpoints/<name>/ckpt/`에 `epoch_*_Gen.pt`·`epoch_*_Dis_{0,1,2}.pt`, `checkpoints/<name>/res/`에 샘플 그리드 저장. 저장 주기와 무관하게 마지막 epoch도 강제 저장된다.
 - 모니터링: `tensorboard --logdir=runs`.
 

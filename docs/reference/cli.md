@@ -35,7 +35,7 @@
 
 | 스크립트 | 인자 | 계약 |
 |---|---|---|
-| [train.sh](../../train.sh) | positional 없음 | 파일 안의 `BS=4`, lr/epoch/save/GPU를 사용한 fresh run. resume positional을 지원하지 않음 |
+| [train.sh](../../train.sh) | positional 없음 | 파일 안의 `BS=64`(기본; 8 GB급 GPU는 파일의 `BS`를 4로 낮춤), lr/epoch/save/GPU를 사용한 fresh run. resume positional을 지원하지 않음 |
 | [eval.sh](../../eval.sh) | `<CKPT_DIR> [EPOCH]` | directory 필수, epoch 기본 149. wrapper의 prompt는 평가에서 무시 |
 | [infer.sh](../../infer.sh) | `<CKPT_DIR> [EPOCH]` | directory 필수, epoch 기본 149. prompt는 wrapper 안에 고정; 세 번째 positional 없음 |
 | [preprocessing/split_dataset.sh](../../preprocessing/split_dataset.sh) | positional 없음 | `image.zip`/`text.zip` filename split |
