@@ -32,6 +32,10 @@
 | `--alignment_mode` | choice | `image_only` | 정렬 head: 새 학습은 `image_only`, legacy 호환은 `legacy_conditioned`. checkpoint metadata가 load 시 의미를 결정 |
 | `--clip_model` | str | `ViT-B/32` | CLIP 모델. **`ViT-B/32` 고정**(choices 제한). 전처리([preprocess_dataset.py](../../preprocessing/preprocess_dataset.py) `convert_dataset`)가 ViT-B/32를 **하드코딩**하고 `clip_embedding_dim=512`라 다른 모델은 차원 불일치. 변경은 CLI 옵션만으로 불가 — 전처리 코드 수정 + 재전처리 + `clip_embedding_dim` 동기화(=코드 변경)가 필요 |
 
+> 🟢 `preprocess_dataset.py`의 `--max-failure-frac`(기본 0.0, 즉 sample 실패 0건까지만 허용)은
+> 학습 옵션이 아니라 전처리 전용 CLI 옵션이다. 상세는 [reference/cli.md](cli.md)와
+> [how-to/prepare-dataset.md](../how-to/prepare-dataset.md) 참고.
+
 > 🟢 `--gpu_ids`는 실제 디바이스 인덱스로 쓰인다(과거의 죽은 재매핑 분기 제거). 디바이스 선택은 스크립트가 담당하고 `BaseOptions`는 `set_device`를 호출하지 않는다.
 > 🟢 `--noise_dim` 변경 시에도 SSA 블록 차원이 어긋나지 않는다(생성기가 `cond_dim`을 명시적으로 전달, [networks/generator.py](../../networks/generator.py) `Generator_type_1`).
 >

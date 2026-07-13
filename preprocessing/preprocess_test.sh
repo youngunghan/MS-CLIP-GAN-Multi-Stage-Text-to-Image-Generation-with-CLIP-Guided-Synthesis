@@ -5,7 +5,7 @@ cd "$REPO"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
 # Test dataset preprocessing
-python preprocessing/preprocess_dataset.py \
+python3 preprocessing/preprocess_dataset.py \
     --source ./data/mm-celeba-hq-dataset \
     --src_data_list ./data/celeba_filenames_test.pickle \
     --dest ./data/testset.zip \

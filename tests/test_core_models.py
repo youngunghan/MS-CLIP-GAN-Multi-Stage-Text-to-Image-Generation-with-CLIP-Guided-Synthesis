@@ -76,7 +76,10 @@ class _RecordingDiscriminator(torch.nn.Module):
         if condition is not None:
             self.conditions.append(condition.detach().clone())
             self.alignment_requests.append(compute_alignment)
-            logits = condition.sum(dim=1) * 0.0
+            # A fixed, non-0.5 logit (independent of the actual condition
+            # values) so tests can pin an exact loss value rather than only
+            # checking that two equal-probability terms average out.
+            logits = torch.full_like(condition.sum(dim=1), 2.0)
         else:
             logits = img.flatten(1).sum(dim=1) * 0.0
         output = torch.sigmoid(logits)
@@ -87,8 +90,13 @@ class _RecordingDiscriminator(torch.nn.Module):
         if mismatched_condition is not None:
             self.conditions.append(mismatched_condition.detach().clone())
             self.alignment_requests.append(False)
+            # Distinct from the matched-condition logit above: this lets a
+            # test pin the exact 0.5/0.5 fake/mismatched rescale weighting in
+            # criteria/loss.py instead of only proving the two weights sum
+            # to 1.0 (which a p=0.5-for-everything D cannot distinguish from
+            # a wrong e.g. 0.3/0.7 split).
             details['mismatched_conditional'] = torch.sigmoid(
-                mismatched_condition.sum(dim=1) * 0.0
+                torch.full_like(mismatched_condition.sum(dim=1), -1.0)
             )
         if compute_unconditional:
             details['unconditional'] = torch.sigmoid(
@@ -108,9 +116,10 @@ class DiscriminatorLossTests(unittest.TestCase):
         mu = torch.arange(batch_size * 2, dtype=torch.float32).view(batch_size, 2)
         labels_real = torch.ones(batch_size)
         labels_fake = torch.zeros(batch_size)
+        bce = torch.nn.BCELoss()
 
         loss = D_loss(
-            real, fake, model, torch.nn.BCELoss(),
+            real, fake, model, bce,
             use_uncond_loss=False, use_contrastive_loss=False,
             gamma=1.0, mu=mu, txt_feature=mu,
             d_fake_label=labels_fake, d_real_label=labels_real,
@@ -122,17 +131,30 @@ class DiscriminatorLossTests(unittest.TestCase):
         torch.testing.assert_close(model.conditions[-1], mu.roll(1, 0))
         self.assertEqual(model.alignment_requests, [False, False, False])
 
-        # This recording D emits p=0.5 for every pairing. The new wrong-text
-        # negative shares the old negative mass with generated fake, so merely
-        # adding it does not increase the conditional loss scale by 50%.
-        no_mismatch = D_loss(
-            real, fake, _RecordingDiscriminator(), torch.nn.BCELoss(),
-            use_uncond_loss=False, use_contrastive_loss=False,
-            gamma=1.0, mu=mu, txt_feature=mu,
-            d_fake_label=labels_fake, d_real_label=labels_real,
-            use_mismatched_condition=False,
+        # The recording D emits DISTINCT, non-0.5 logits for the
+        # matched-condition head (2.0, used by both fake and real matched
+        # pairings) and the mismatched-condition head (-1.0). This pins the
+        # exact 0.5/0.5 fake/mismatched-real rescale weighting in
+        # criteria/loss.py: an incorrect split (e.g. 0.3/0.7) would NOT
+        # reproduce `expected` below, whereas the old p=0.5-for-everything
+        # recorder made every split summing to 1.0 indistinguishable.
+        p_matched = torch.sigmoid(torch.tensor(2.0)).expand(batch_size)
+        p_mismatched = torch.sigmoid(torch.tensor(-1.0)).expand(batch_size)
+        expected = (
+            bce(p_matched, labels_real)
+            + 0.5 * bce(p_matched, labels_fake)
+            + 0.5 * bce(p_mismatched, labels_fake)
         )
-        torch.testing.assert_close(loss, no_mismatch)
+        torch.testing.assert_close(loss, expected)
+
+        # Confirm the pinning is non-trivial: a wrong 0.3/0.7 split would have
+        # produced a different total given these distinct logits.
+        wrong_split = (
+            bce(p_matched, labels_real)
+            + 0.3 * bce(p_matched, labels_fake)
+            + 0.7 * bce(p_mismatched, labels_fake)
+        )
+        self.assertFalse(torch.allclose(loss, wrong_split))
 
     def test_mismatched_negative_can_be_disabled(self):
         model = _RecordingDiscriminator()

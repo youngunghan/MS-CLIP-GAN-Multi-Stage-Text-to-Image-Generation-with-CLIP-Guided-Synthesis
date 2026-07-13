@@ -16,16 +16,25 @@ os.makedirs(OUTDIR, exist_ok=True)
 # ---- parse loss log ----
 ep, dl, gl = [], [], []
 pat = re.compile(r"Epoch:\s*(\d+)\s*\t?\s*d_loss:\s*([\d.eE+-]+)\s*\t?\s*g_loss:\s*([\d.eE+-]+)")
-for line in open(LOG, errors="ignore"):
-    m = pat.search(line)
-    if m:
-        ep.append(int(m.group(1))); dl.append(float(m.group(2))); gl.append(float(m.group(3)))
+with open(LOG, errors="ignore") as f:
+    for line in f:
+        m = pat.search(line)
+        if m:
+            ep.append(int(m.group(1))); dl.append(float(m.group(2))); gl.append(float(m.group(3)))
 
 # ---- read FID/IS ----
-res = json.load(open(EVAL)) if os.path.exists(EVAL) else {}
-es = sorted(int(k) for k in res)
+if os.path.exists(EVAL):
+    with open(EVAL) as f:
+        res = json.load(f)
+else:
+    res = {}
+# Mirror plot_compare.load_run's requirement that every entry have "fid";
+# unlike that stricter loader, "is_mean" is optional here (e.g. an FID-only
+# eval run) and missing values are plotted as gaps (NaN) instead of raising
+# a bare KeyError.
+es = sorted(int(k) for k in res if isinstance(res[k], dict) and "fid" in res[k])
 fids = [res[str(e)]["fid"] for e in es]
-iss = [res[str(e)]["is_mean"] for e in es]
+iss = [res[str(e)].get("is_mean", float("nan")) for e in es]
 
 fig, ax = plt.subplots(1, 2, figsize=(13, 4.5))
 

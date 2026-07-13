@@ -294,6 +294,13 @@ def download(
                 f"dataset ended after {written} samples; requested {count}; existing archives were not replaced"
             )
 
+        # NOTE: these SHA-256 digests are an *artifact*-integrity check over the
+        # locally re-encoded image.zip/text.zip produced by this run (JPEG
+        # re-encoding, quality=95, and zip packing are not guaranteed
+        # byte-stable across library versions/platforms) -- they are not a
+        # *source*-provenance hash of the upstream Hugging Face dataset. Source
+        # provenance is instead tracked via `resolved_revision`, the immutable
+        # commit SHA the Hub resolved the requested tag/branch/commit to.
         image_sha256 = sha256_file(image_tmp)
         text_sha256 = sha256_file(text_tmp)
         os.replace(image_tmp, image_final)
@@ -342,6 +349,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(
             f"{int(status['ready'])}\t{status['available_samples']}\t"
             f"{status['resolved_revision']}"
+        )
+        return 0
+
+    # Streaming re-downloads the whole dataset from scratch on every call (no
+    # byte-range resume), so guard against redundant re-downloads: if a prior
+    # run already left a verified download at this resolved revision covering
+    # at least the requested --count (check_existing_download uses >=, not
+    # ==), skip straight to reuse instead of re-streaming it.
+    existing = check_existing_download(args.count, args.output_dir, resolved_revision)
+    if existing["ready"]:
+        print(
+            f"skip download: {existing['available_samples']} verified samples already "
+            f"present at revision {resolved_revision} -> {args.output_dir}",
+            flush=True,
         )
         return 0
 

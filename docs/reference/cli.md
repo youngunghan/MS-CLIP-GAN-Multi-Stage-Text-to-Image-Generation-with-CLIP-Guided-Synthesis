@@ -29,7 +29,7 @@
 | [experiments/plot_compare.py](../../experiments/plot_compare.py) | `main()` | `OUT LABEL=EVAL...`; `--require-comparable`, allowed difference keys, optional `--require-diffaugment-pair POLICY` | neutral FID overlay; strict mode validates clean-Git sidecars and optional no-aug→aug direction |
 | [experiments/dl_real_scaled.py](../../experiments/dl_real_scaled.py) | `main()` | `COUNT [--revision REV] [--output-dir DIR]` | source zips + `download_provenance.json` |
 | [preprocessing/split_dataset.py](../../preprocessing/split_dataset.py) | `split_dataset()` | source, ratio, seed, optional max | train/test filename pickle |
-| [preprocessing/preprocess_dataset.py](../../preprocessing/preprocess_dataset.py) | `convert_dataset()` | source/list/dest/size, `--seed 42`, **`--emb_dim 512` 필수** | deterministic RGB PNG + embedding ZIP; 전부 성공 후 atomic replace |
+| [preprocessing/preprocess_dataset.py](../../preprocessing/preprocess_dataset.py) | `convert_dataset()` | source/list/dest/size, `--seed 42`, **`--emb_dim 512` 필수**, `--max-failure-frac 0.0` | deterministic RGB PNG + embedding ZIP/directory; 기본은 전부 성공 후 atomic replace, `--max-failure-frac`으로 일부 실패 허용 가능 |
 
 ## 3. Root shell wrapper
 
@@ -93,8 +93,11 @@ exact training resume에는 같은 epoch의 G/D/optimizer/scheduler 및 EMA raw 
 ## 6. 실패 계약
 
 - shell runner는 child exit code를 전파하며 GPU sampler는 `EXIT` cleanup한다.
-- ZIP 전처리는 duplicate/missing stem, decode/빈 caption 등 한 sample 실패도 전체
-  non-zero로 처리하고 staged output을 버려 기존 destination을 보존한다. OOM/interrupt도 전파한다.
+- ZIP/directory 전처리는 duplicate/missing stem, decode/빈 caption 등 sample 실패 비율이
+  `--max-failure-frac`(기본 0.0, 즉 한 sample 실패도 불허)을 넘으면 전체 non-zero로 처리하고
+  staged output(ZIP 파일 또는 directory)을 버려 기존 destination을 보존한다.
+  `--max-failure-frac`을 0보다 크게 주면 그 비율 이내 실패는 허용하고 성공한 sample만으로
+  destination을 atomic하게 교체한다. OOM/interrupt도 전파한다.
 - curve eval은 빈 checkpoint 선택, 잘못된 dataset/metadata, non-finite metric에서
   non-zero로 끝나며 빈 `{}`를 성공 결과로 쓰지 않는다.
 - CLI range/architecture/resume 조합 오류는 학습 시작 전에 usage와 함께 실패한다.
