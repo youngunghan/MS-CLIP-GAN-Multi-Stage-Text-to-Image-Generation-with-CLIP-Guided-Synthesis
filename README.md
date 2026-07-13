@@ -1,11 +1,27 @@
 # MS-CLIP-GAN: Multi-Stage Text-to-Image Generation with CLIP-Guided Synthesis
 
-This repository introduces a novel approach to text-to-image generation that utilizes CLIP embeddings in a multi-stage synthesis pipeline. The method achieves high-quality and semantically consistent image generation from textual descriptions.
+This repository implements an experimental multi-stage text-to-image GAN that combines
+CLIP text embeddings with 64→128→256 synthesis. It is a research prototype assembled
+from ideas used by StackGAN++, LAFITE, AttnGAN, and related work; it does not claim a new
+state of the art. The checked-in experiment record is limited to a single-seed,
+small-subset study, and its samples remain visibly blurry/distorted. Read
+[the correctness and limitations note](docs/explanation/correctness-and-fixes.md) before
+quoting results.
 
 ---
 
-## Dataset Download and Other Details
-Instructions for downloading the dataset and additional details are provided at the bottom of this README file.
+## Documentation
+
+Full developer docs live in [docs/README.md](docs/README.md) (human index) and [docs/llms.txt](docs/llms.txt) (LLM index), organized by Diátaxis (tutorials / how-to / reference / explanation):
+
+- Quickstart: [docs/tutorials/quickstart.md](docs/tutorials/quickstart.md)
+- Dataset preparation: [docs/how-to/prepare-dataset.md](docs/how-to/prepare-dataset.md)
+- Architecture (with figures): [docs/explanation/architecture.md](docs/explanation/architecture.md)
+- Correctness & known limitations: [docs/explanation/correctness-and-fixes.md](docs/explanation/correctness-and-fixes.md)
+
+## Dataset
+
+This project uses **MM-CelebA-HQ**. Download it from the original distribution (MM-CelebA-HQ-Dataset) and place it as a directory containing `image.zip` and `text.zip` (see the structure below). The preprocessed output zip schema is documented in [docs/reference/dataset-format.md](docs/reference/dataset-format.md).
 
 ---
 
@@ -18,6 +34,10 @@ Before preprocessing the dataset, ensure you have the required environment set u
    ```bash
    conda env create -f environment.yml
    ```
+
+   To update an existing `msclipgan` environment, run
+   `conda env update -f environment.yml --prune`. The audited core combination is
+   Python 3.8.20, PyTorch 2.4.0, TorchVision 0.19.0, and CUDA runtime 12.4.
 
 2. Activate the Environment:
    ```bash
@@ -34,55 +54,38 @@ Before preprocessing the dataset, ensure you have the required environment set u
 The dataset should be organized in the following structure:
 
 ```
-data/MM-Celeba-HQ-Dataset.zip
-├── image.zip/
-├── text.zip/
-├── image/
-│   ├── 000001.jpg
-│   ├── 000002.jpg
-│   └── ...
-└── text/
-    ├── 000001.txt
-    ├── 000002.txt
-    └── ...
+data/mm-celeba-hq-dataset/
+├── image.zip          # images/000001.jpg, images/000002.jpg, ...
+└── text.zip           # celeba-caption/000001.txt, celeba-caption/000002.txt, ...
 ```
+
+> The preprocessing scripts take `--source ./data/mm-celeba-hq-dataset` (a directory containing `image.zip` and `text.zip`), not a single archive file. See [docs/how-to/prepare-dataset.md](docs/how-to/prepare-dataset.md).
 
 ### 2. Split Dataset
 To split the dataset into training and testing sets:
 
-1. **Give execution permission to the script:**
+1. **Run the split script:**
    ```bash
-   chmod +x preprocessing/split_dataset.sh
-   ```
-
-2. **Run the split script:**
-   ```bash
-   ./preprocessing/split_dataset.sh
+   bash preprocessing/split_dataset.sh
    ```
 
 This will generate two pickle files:
 - `celeba_filenames_train.pickle`: Contains filenames for the training set.
 - `celeba_filenames_test.pickle`: Contains filenames for the test set.
 
-You can customize the split ratio by modifying the `--train_ratio` parameter in `split_dataset.sh` (default: `0.8`).
+You can customize the split ratio by modifying the `--train_ratio` parameter in `split_dataset.sh` (default: `0.85`).
 
 ### 3. Preprocess Dataset
 After splitting the dataset, preprocess both training and testing sets:
 
-1. **Give execution permission to the preprocessing scripts:**
+1. **Process the training set:**
    ```bash
-   chmod +x preprocessing/preprocess_train.sh
-   chmod +x preprocessing/preprocess_test.sh
+   bash preprocessing/preprocess_train.sh
    ```
 
-2. **Process the training set:**
+2. **Process the testing set:**
    ```bash
-   ./preprocessing/preprocess_train.sh
-   ```
-
-3. **Process the testing set:**
-   ```bash
-   ./preprocessing/preprocess_test.sh
+   bash preprocessing/preprocess_test.sh
    ```
 
 #### Preprocessing Steps:
@@ -108,17 +111,15 @@ Make sure you have preprocessed the dataset as described in the "Dataset Preproc
 ### 2. Run the Training Script
 Execute the training script to start the training process:
 
-1. **Give execution permission to the training script:**
+1. **Run the training script:**
    ```bash
-   chmod +x train.sh
+   # BS=4 measured about 5.8–6.2 GB on an RTX 4060 Ti 8 GB.
+   bash train.sh
    ```
 
-2. **Run the training script:**
-   ```bash
-   ./train.sh
-   ```
+This starts a fresh run with the audited linear-conditioning and image-only-alignment defaults. The linear choice addresses saturation measured in this repository's legacy checkpoint; metadata-less historical checkpoints still use their original ReLU behavior. Training saves at the configured frequency and always saves the final epoch. Configure `GPUS` for multi-GPU use. For exact resume versus intentional schedule extension, follow [docs/how-to/train-eval-infer.md](docs/how-to/train-eval-infer.md); do not execute the two commented resume flags as a separate shell command.
 
-This will start the training process using the specified parameters. The script will automatically handle multi-GPU settings and save checkpoints at the specified frequency.
+Metadata-less historical checkpoints are loaded with their legacy conditioning/alignment semantics. They remain usable for evaluation and inference, but evaluating the audited fresh-run defaults requires retraining.
 
 ### 3. Monitor Training
 You can monitor the training process using TensorBoard. The logs are saved in the `runs` directory.
@@ -139,17 +140,14 @@ Make sure you have preprocessed the dataset as described in the "Dataset Preproc
 #### 2. Run the Evaluation Script
 Execute an evaluation script to start the evaluation process:
 
-1. **Give execution permission to the evaluation script:**
+1. **Run the evaluation script:**
    ```bash
-   chmod +x eval.sh
+   # bash eval.sh <CKPT_DIR> [EPOCH]
+   # CKPT_DIR (required) is the directory containing epoch_<EPOCH>_Gen.pt
+   bash eval.sh ./checkpoints/<run_name>/ckpt 149
    ```
 
-2. **Run the evaluation script:**
-   ```bash
-   ./eval.sh
-   ```
-
-This will start the evaluation process using the specified parameters.
+This will start the evaluation process using the specified parameters. The `--prompt` text inside `eval.sh` is a shared-parser placeholder and is not used by dataset evaluation.
 
 ---
 
@@ -164,17 +162,25 @@ Prepare the text descriptions you want to use for generating images.
 #### 2. Run the Inference Script
 Create and execute an inference script to generate images from text:
 
-1. **Give execution permission to the inference script:**
+1. **Run the inference script with its built-in prompt:**
    ```bash
-   chmod +x infer.sh
-   ```
-
-2. **Run the inference script:**
-   ```bash
-   ./infer.sh
+   # bash infer.sh <CKPT_DIR> [EPOCH]
+   # CKPT_DIR (required) is the directory containing epoch_<EPOCH>_Gen.pt
+   bash infer.sh ./checkpoints/<run_name>/ckpt 149
    ```
 
 This will generate images based on the provided text descriptions using the specified checkpoint.
+Only the generator checkpoint is required for inference; discriminator checkpoints are not needed.
+
+`infer.sh` accepts only `<CKPT_DIR> [EPOCH]`; it does not accept a prompt as a third positional argument. To choose a prompt, call the Python entrypoint:
+
+```bash
+PYTHONPATH=. python scripts/infer.py \
+  --checkpoint_path ./checkpoints/<run_name>/ckpt \
+  --load_epoch 149 \
+  --eval_data_path None \
+  --prompt "a portrait of a person with blond hair"
+```
 
 ---
 
