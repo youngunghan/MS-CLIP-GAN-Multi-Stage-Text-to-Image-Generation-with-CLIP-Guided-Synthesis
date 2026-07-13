@@ -15,9 +15,9 @@ CLIP 텍스트 임베딩을 조건으로 64→128→256 해상도를 단계적�
 | 문서 | 설명 |
 |---|---|
 | [how-to/prepare-dataset.md](how-to/prepare-dataset.md) | MM-CelebA-HQ 분할 → CLIP 피처 추출 전처리 → `trainset.zip`/`testset.zip` |
-| [how-to/train-eval-infer.md](how-to/train-eval-infer.md) | 학습(단일/다중 GPU·resume)·평가(FID/IS/CLIP)·추론 실행 |
+| [how-to/train-eval-infer.md](how-to/train-eval-infer.md) | fresh 학습·exact resume/기간 연장·평가(FID/IS/CLIP)·prompt 추론 |
 | [how-to/troubleshooting.md](how-to/troubleshooting.md) | 증상별 문제 해결(OOM·체크포인트 로드·CLIP·데이터 경로) |
-| [how-to/run-experiments.md](how-to/run-experiments.md) | `experiments/` 서브셋 실험 워크플로(데이터 준비→학습→FID/IS 곡선→플롯); 결과는 `experiments/RESULTS.md` |
+| [how-to/run-experiments.md](how-to/run-experiments.md) | 서브셋 데이터 provenance→학습→checkpoint별 결정적 FID/IS+provenance→plot; 역사적 결과는 `experiments/RESULTS.md` |
 
 ### reference — 조회용 명세
 
@@ -31,8 +31,8 @@ CLIP 텍스트 임베딩을 조건으로 64→128→256 해상도를 단계적�
 
 | 문서 | 설명 |
 |---|---|
-| [explanation/architecture.md](explanation/architecture.md) | 다단계 생성기/판별기 구조 · 텐서 흐름 · CLIP 조건 증강 · 손실 설계 |
-| [explanation/correctness-and-fixes.md](explanation/correctness-and-fixes.md) | ⭐ 정확성 감사로 고친 핵심 버그와 남은 주의점(인용 전 필독) |
+| [explanation/architecture.md](explanation/architecture.md) | 다단계 G/D·linear/legacy CA·image-only 정렬·DiffAugment·손실/업데이트 흐름 |
+| [explanation/correctness-and-fixes.md](explanation/correctness-and-fixes.md) | ⭐ 정확성 감사 수정·checkpoint 호환·실행 검증·결과 인용 한계 |
 
 ## 읽기 순서
 

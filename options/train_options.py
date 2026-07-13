@@ -11,10 +11,16 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--use_contrastive_loss', action="store_true")
         parser.add_argument('--use_mixed_loss', action="store_true")
         parser.add_argument('--new_optim', action='store_true', help='new optimizer instead of loading the optim state')
+        parser.add_argument(
+            '--no_mismatched_condition', action='store_false',
+            dest='use_mismatched_condition',
+            help='Disable the default real-image/mismatched-text conditional BCE negative.'
+        )
+        parser.set_defaults(use_mismatched_condition=True)
 
         # --- GAN stability levers (all opt-in; defaults reproduce the original behaviour) ---
         parser.add_argument('--d_lr', type=float, default=-1.0,
-                            help='Discriminator LR (TTUR). <=0 means use --learning_rate for D too.')
+                            help='Discriminator LR (TTUR). -1 means use --learning_rate for D too.')
         parser.add_argument('--use_ema', action='store_true',
                             help='Track an EMA of the generator weights and sample/checkpoint the EMA model.')
         parser.add_argument('--ema_decay', type=float, default=0.999, help='EMA decay for the generator.')
@@ -29,3 +35,45 @@ class TrainOptions(BaseOptions):
 
         parser.add_argument('--is_train', type=str2bool, default=True, choices=([True, False]))
         return parser
+
+    def validate(self, opt):
+        super().validate(opt)
+
+        def require(condition, message):
+            if not condition:
+                self.parser.error(message)
+
+        require(opt.is_train, 'TrainOptions requires --is_train true')
+        require(opt.batch_size > 0, '--batch_size must be > 0')
+        if opt.use_contrastive_loss:
+            require(opt.batch_size >= 2,
+                    '--use_contrastive_loss requires --batch_size >= 2')
+        require(opt.num_epochs > 0, '--num_epochs must be > 0')
+        require(opt.learning_rate > 0, '--learning_rate must be > 0')
+        require(opt.save_freq > 0, '--save_freq must be > 0')
+        require(opt.d_lr == -1.0 or opt.d_lr > 0,
+                '--d_lr must be -1 (use G LR) or > 0')
+        require(0.0 <= opt.ema_decay < 1.0,
+                '--ema_decay must be in [0, 1)')
+        require(0.0 < opt.real_label_smooth <= 1.0,
+                '--real_label_smooth must be in (0, 1]')
+        require(opt.d_update_every > 0, '--d_update_every must be > 0')
+
+        resume_requested = opt.resume_checkpoint_path is not None or opt.resume_epoch != -1
+        require(
+            (opt.resume_checkpoint_path is None) == (opt.resume_epoch == -1),
+            '--resume_checkpoint_path and --resume_epoch must be given together'
+        )
+        if resume_requested:
+            require(opt.resume_epoch >= 0, '--resume_epoch must be >= 0')
+            require(opt.resume_epoch < opt.num_epochs - 1,
+                    '--num_epochs must leave at least one epoch after --resume_epoch')
+        require(not opt.new_optim or resume_requested,
+                '--new_optim is meaningful only when resuming a checkpoint')
+
+        if opt.use_diffaugment:
+            policies = [value.strip() for value in opt.diffaugment_policy.split(',')]
+            valid = {'color', 'translation', 'cutout'}
+            require(all(policies) and all(value in valid for value in policies),
+                    '--diffaugment_policy must be a non-empty comma-separated subset of '
+                    'color,translation,cutout')

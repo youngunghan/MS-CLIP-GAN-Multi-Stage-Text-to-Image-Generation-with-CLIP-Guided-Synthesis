@@ -136,14 +136,29 @@ class MM_CelebA(Dataset):
 def get_dataloader(args, dataset, is_train=True):
     if len(dataset) == 0:
         raise ValueError("Dataset is empty")
+    if args.batch_size <= 0:
+        raise ValueError("batch_size must be > 0")
+    use_contrastive = is_train and getattr(args, 'use_contrastive_loss', False)
+    if use_contrastive and args.batch_size < 2:
+        raise ValueError("contrastive training requires batch_size >= 2")
+    if use_contrastive and len(dataset) < 2:
+        raise ValueError("contrastive training requires at least two dataset samples")
     if is_train:
         sampler = RandomSampler(dataset)
     else:
         sampler = SequentialSampler(dataset)
 
+    # InfoNCE is undefined for B=1. Drop only the problematic singleton
+    # remainder; unlike unconditional drop_last=True, this retains valid partial
+    # batches of size 2..batch_size-1.
+    drop_singleton = (
+        use_contrastive and len(dataset) % args.batch_size == 1
+    )
+
     dataloader = DataLoader(dataset=dataset,
                             sampler=sampler,
                             batch_size=args.batch_size,
                             num_workers=args.num_workers,
-                            pin_memory=True)
+                            pin_memory=True,
+                            drop_last=drop_singleton)
     return dataloader

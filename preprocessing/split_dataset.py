@@ -1,8 +1,28 @@
+#!/usr/bin/env python3
+
 import os
 import pickle
 import random
 import zipfile
 from pathlib import Path
+
+
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp'}
+
+
+def _unique_stems(image_paths, source_label):
+    """Return sorted stems, rejecting identities that map to multiple images."""
+    by_stem = {}
+    for image_path in image_paths:
+        by_stem.setdefault(Path(image_path).stem, []).append(str(image_path))
+    collisions = {stem: paths for stem, paths in by_stem.items() if len(paths) > 1}
+    if collisions:
+        details = "; ".join(
+            f"{stem}: {', '.join(paths)}" for stem, paths in sorted(collisions.items())
+        )
+        raise ValueError(f"duplicate image stems in {source_label}: {details}")
+    return sorted(by_stem)
+
 
 def get_all_image_files(source_path):
     """Get all image files from the source directory or zip file"""
@@ -18,28 +38,38 @@ def get_all_image_files(source_path):
 
             # Filter image files by extension (do NOT assume an 'images/' prefix; the
             # archive may store images at top level, under image/ or images/, etc.)
-            image_exts = ('.jpg', '.jpeg', '.png', '.bmp')
-            image_files = [
-                Path(f).stem for f in all_files
-                if not f.endswith('/') and f.lower().endswith(image_exts)
+            image_paths = [
+                f for f in all_files
+                if not f.endswith('/') and Path(f).suffix.lower() in IMAGE_EXTENSIONS
             ]
-            print("DEBUG: First 10 filtered files:", image_files[:10])
+            print("DEBUG: First 10 filtered files:", image_paths[:10])
+            image_files = _unique_stems(image_paths, image_zip)
     else:
         # Original directory-based logic
         image_dir = Path(os.path.join(source_path, 'images'))
-        for ext in ['*.jpg', '*.png', '*.jpeg']:
-            image_files.extend([f.stem for f in image_dir.rglob(ext)])
+        image_paths = [
+            path for path in image_dir.rglob('*')
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ]
+        image_files = _unique_stems(image_paths, str(image_dir))
 
-    return sorted(image_files)
+    return image_files
 
 def split_dataset(source_path, train_ratio=0.8, seed=42, max_images=None):
     """Split dataset into train and test sets"""
+    if not 0.0 < train_ratio < 1.0:
+        raise ValueError(f"train_ratio must be between 0 and 1 (exclusive); got {train_ratio}")
+    if max_images is not None and max_images <= 0:
+        raise ValueError(f"max_images must be positive when provided; got {max_images}")
+
     # Set random seed for reproducibility
     random.seed(seed)
 
     # Get all image files
     all_files = get_all_image_files(source_path)
     print(f"Total number of images found: {len(all_files)}")
+    if not all_files:
+        raise ValueError(f"no input images found under {source_path}")
 
     # Cap BEFORE shuffling. The list is sorted and the HF downloader writes the first
     # N samples in order, so sorted[:N] equals what a fresh N-image download would
@@ -56,6 +86,14 @@ def split_dataset(source_path, train_ratio=0.8, seed=42, max_images=None):
     split_idx = int(len(all_files) * train_ratio)
     train_files = all_files[:split_idx]
     test_files = all_files[split_idx:]
+
+    if not train_files or not test_files:
+        raise ValueError(
+            f"split would be empty: {len(train_files)} train / {len(test_files)} test; "
+            "provide at least two images or adjust --train_ratio"
+        )
+    if len(train_files) + len(test_files) != len(all_files):
+        raise RuntimeError("split count mismatch")
 
     print(f"Number of training images: {len(train_files)}")
     print(f"Number of test images: {len(test_files)}")

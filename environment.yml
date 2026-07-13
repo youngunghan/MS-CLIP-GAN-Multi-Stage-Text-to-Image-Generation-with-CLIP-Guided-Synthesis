@@ -5,27 +5,32 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.8
-  - pytorch>=1.7.1
-  - torchvision>=0.8.2
-  - torchmetrics
-  - cudatoolkit=11.3
-  - numpy>=1.19.2
-  - pillow>=8.0.0
-  - opencv>=4.5.0
-  - matplotlib>=3.3.0
-  - tqdm>=4.50.0
-  - click>=7.1.2
+  - python=3.8.20
+  - pytorch=2.4.0
+  - torchvision=0.19.0
+  - pytorch-cuda=12.4
+  - cuda-version=12.4
+  - torchmetrics=1.5.2
+  - numpy=1.24.4
+  - pillow=10.4.0
+  - opencv=4.10.0
+  - matplotlib=3.7.3
+  - tqdm=4.67.1
+  - click=8.1.7
   - pip>=20.2
   - tensorboard==2.11.0
   - pip:
+    - pytest==8.3.5
     - ftfy
     - regex
-    - git+https://github.com/openai/CLIP.git
+    - git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
     - torchsummary>=1.5.1
     - pytorch-ignite>=0.4.9
     - torch-fidelity
-    - torchmetrics[image]
+    - torchmetrics[image]==1.5.2
+    # Python 3.8-compatible line; used only by experiments/data_prep.sh.
+    - datasets>=2.14,<3
+    - huggingface_hub>=0.17,<1
 
 variables:
   PYTHONWARNINGS: "ignore"

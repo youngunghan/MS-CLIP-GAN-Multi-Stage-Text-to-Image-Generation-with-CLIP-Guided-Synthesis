@@ -7,9 +7,9 @@
 
 ## how-to
 - [how-to/prepare-dataset.md](how-to/prepare-dataset.md) : MM-CelebA-HQ 분할·CLIP 피처 전처리 → train/test zip
-- [how-to/train-eval-infer.md](how-to/train-eval-infer.md) : 학습(단일/다중 GPU·resume)·평가·추론 실행
+- [how-to/train-eval-infer.md](how-to/train-eval-infer.md) : fresh 학습·exact resume/기간 연장·평가·prompt 추론
 - [how-to/troubleshooting.md](how-to/troubleshooting.md) : 증상별 문제 해결
-- [how-to/run-experiments.md](how-to/run-experiments.md) : experiments/ 서브셋 실험(데이터 준비·학습·FID/IS 곡선·플롯); 결과는 experiments/RESULTS.md
+- [how-to/run-experiments.md](how-to/run-experiments.md) : 서브셋 source/eval provenance·학습·결정적 FID/IS·plot; 역사적 결과는 experiments/RESULTS.md
 
 ## reference
 - [reference/configuration.md](reference/configuration.md) : CLI 옵션·버전 핀·하이퍼파라미터
@@ -17,5 +17,5 @@
 - [reference/dataset-format.md](reference/dataset-format.md) : 전처리 zip 구조·dataset.json 스키마·데이터로더 계약
 
 ## explanation
-- [explanation/architecture.md](explanation/architecture.md) : 다단계 G/D 구조·텐서 흐름·CLIP 조건 증강·손실
-- [explanation/correctness-and-fixes.md](explanation/correctness-and-fixes.md) : ⭐ 정확성 감사 수정·남은 주의점(수치 인용 전 필독)
+- [explanation/architecture.md](explanation/architecture.md) : 다단계 G/D·CA 호환·image-only 정렬·DiffAugment·손실/업데이트
+- [explanation/correctness-and-fixes.md](explanation/correctness-and-fixes.md) : ⭐ 정확성 감사·checkpoint 호환·실행 검증·결과 인용 한계

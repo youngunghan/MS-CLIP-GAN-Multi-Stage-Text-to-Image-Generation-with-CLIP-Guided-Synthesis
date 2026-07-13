@@ -1,16 +1,84 @@
 from utils.utils import *
 from criteria.loss import *
 from torch.utils.tensorboard import SummaryWriter
+from contextlib import contextmanager
 import os
 
 d_losses = []
 g_losses = []
 
+
+def warmup_training_losses(use_mixed_loss, device):
+    """Materialize lazy loss networks before a resumed RNG snapshot is restored.
+
+    VGG construction consumes CPU RNG even though pretrained weights subsequently
+    overwrite the initialization. Delaying it until the first post-resume G step
+    would therefore diverge from an uninterrupted run.
+    """
+    if use_mixed_loss:
+        get_vgg_perceptual_loss(device)
+
+
+@contextmanager
+def preserved_module_buffers(module):
+    """Restore all registered buffers after a state-neutral training-mode forward.
+
+    The discriminator phase needs generator outputs computed with train-mode batch
+    statistics, but it must not count as a generator state update. Keeping the
+    module in train mode preserves output semantics; snapshotting/restoring buffers
+    rolls back BatchNorm running statistics and counters afterward. Parameters,
+    module train/eval flags, and RNG streams are intentionally untouched.
+    """
+    snapshots = [(buffer, buffer.detach().clone()) for buffer in module.buffers()]
+    try:
+        yield
+    finally:
+        with torch.no_grad():
+            for buffer, value in snapshots:
+                buffer.copy_(value)
+
+
+@contextmanager
+def frozen_discriminators(discriminators):
+    """Temporarily make discriminators read-only while retaining input gradients.
+
+    Evaluation mode is important in addition to ``requires_grad_(False)``: it
+    prevents BatchNorm running-stat and spectral-normalization power-iteration
+    updates during the generator phase.  Every module's train/eval flag and every
+    parameter's original ``requires_grad`` value are restored exactly.
+    """
+    module_modes = [
+        [(module, module.training) for module in discriminator.modules()]
+        for discriminator in discriminators
+    ]
+    parameter_modes = [
+        [(parameter, parameter.requires_grad) for parameter in discriminator.parameters()]
+        for discriminator in discriminators
+    ]
+
+    try:
+        for discriminator in discriminators:
+            discriminator.eval()
+        for modes in parameter_modes:
+            for parameter, _ in modes:
+                parameter.requires_grad_(False)
+        yield
+    finally:
+        for modes in parameter_modes:
+            for parameter, requires_grad in modes:
+                parameter.requires_grad_(requires_grad)
+        # Assign flags directly so a parent .train() does not overwrite a child's
+        # independently saved mode.
+        for modes in module_modes:
+            for module, training in modes:
+                module.training = training
+
 def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_lst,
                loss_fn, num_stage, use_uncond_loss, use_contrastive_loss, use_mixed_loss,
                clip_model, gamma, lam, report_interval, device, epoch, writer,
                g_ema=None, ema_decay=0.999, real_label_smooth=1.0, d_update_every=1,
-               use_diffaugment=False, diffaugment_policy='color,translation,cutout'):
+               use_diffaugment=False, diffaugment_policy='color,translation,cutout',
+               use_mismatched_condition=True):
 
     model_G.train()
     for D in model_D_lst:
@@ -38,6 +106,11 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
             save_txt_feature = txt_feature.clone()
 
         BATCH_SIZE = real_imgs[-1].shape[0]
+        if use_contrastive_loss and BATCH_SIZE < 2:
+            raise ValueError(
+                'contrastive training requires batch_size >= 2; configure the '
+                'training loader to drop a singleton remainder'
+            )
         real_imgs = [img.to(device) for img in real_imgs]
         txt_feature = txt_feature.to(device)
 
@@ -53,7 +126,9 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
         if iter % d_update_every == 0:
             # Generate fakes under no_grad so they are detached from the generator graph.
             noise = torch.randn(BATCH_SIZE, noise_dim, device=device)
-            with torch.no_grad():
+            # Preserve train-mode batch-stat output semantics without letting a
+            # D-only forward advance any generator buffers (especially BN state).
+            with torch.no_grad(), preserved_module_buffers(model_G):
                 fake_images, mu, log_sigma = model_G(txt_feature, noise)
 
             for i in range(num_stage):
@@ -64,7 +139,8 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
                                   use_uncond_loss, use_contrastive_loss,
                                   gamma,
                                   mu, txt_feature,
-                                  d_fake_label, d_real_label, diffaug=diffaug)
+                                  d_fake_label, d_real_label, diffaug=diffaug,
+                                  use_mismatched_condition=use_mismatched_condition)
                 d_loss_i = d_scale * d_loss_i
                 d_loss_i.backward()
 
@@ -78,27 +154,32 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
             d_loss_epoch += d_loss_iter
 
         # ---------------- Phase 2: Optimize Generator ----------------
+        # Remove gradients left by the preceding D update. Frozen parameters below
+        # then remain grad-free throughout the generator phase.
+        for optim_d in optim_d_lst:
+            optim_d.zero_grad(set_to_none=True)
         optim_g.zero_grad()
         noise = torch.randn(BATCH_SIZE, noise_dim, device=device)
         fake_images, mu, log_sigma = model_G(txt_feature, noise)
 
-        g_loss = 0.0
-        for i in range(num_stage):
-            g_loss_i = G_loss(real_imgs[i], fake_images[i], model_D_lst[i], loss_fn,
-                              use_uncond_loss, use_contrastive_loss, use_mixed_loss,
-                              clip_model, gamma, lam,
-                              mu, txt_feature,
-                              g_label,
-                              device, diffaug=diffaug)
-            g_loss = g_loss + g_loss_i
-            writer.add_scalar(f'G_loss/stage_{i}', g_loss_i.item(), epoch * total_iter + iter)
+        with frozen_discriminators(model_D_lst):
+            g_loss = 0.0
+            for i in range(num_stage):
+                g_loss_i = G_loss(real_imgs[i], fake_images[i], model_D_lst[i], loss_fn,
+                                  use_uncond_loss, use_contrastive_loss, use_mixed_loss,
+                                  clip_model, gamma, lam,
+                                  mu, txt_feature,
+                                  g_label,
+                                  device, diffaug=diffaug)
+                g_loss = g_loss + g_loss_i
+                writer.add_scalar(f'G_loss/stage_{i}', g_loss_i.item(), epoch * total_iter + iter)
 
-        # Conditioning-augmentation KL regularizer
-        aug_loss = KL_divergence(mu, log_sigma)
-        writer.add_scalar('Loss/aug_loss', aug_loss.item(), epoch * total_iter + iter)
+            # Conditioning-augmentation KL regularizer
+            aug_loss = KL_divergence(mu, log_sigma)
+            writer.add_scalar('Loss/aug_loss', aug_loss.item(), epoch * total_iter + iter)
 
-        g_loss = g_scale * (g_loss + aug_loss)
-        g_loss.backward()
+            g_loss = g_scale * (g_loss + aug_loss)
+            g_loss.backward()
         torch.nn.utils.clip_grad_norm_(model_G.parameters(), max_norm=1.0)
         optim_g.step()
 

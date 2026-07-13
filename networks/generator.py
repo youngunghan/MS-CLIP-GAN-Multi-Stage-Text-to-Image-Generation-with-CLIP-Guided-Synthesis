@@ -3,12 +3,37 @@ import torch.nn as nn
 from .block import *
 
 class ConditioningAugmention(nn.Module):
-    def __init__(self, c_txt_dim, cond_dim, device):
+    """StackGAN conditioning augmentation with checkpoint-compatible activations.
+
+    The original implementation put a ReLU after the joint ``(mu, log_sigma)``
+    projection.  That constrains ``mu >= 0`` and ``sigma >= 1``; this repository's
+    audited checkpoints showed boundary saturation under those constraints. Fresh
+    models therefore use a signed, unconstrained linear projection. ``relu``
+    remains available so metadata-less checkpoints reproduce their historical
+    forward pass exactly.
+
+    Both modes keep exactly the same parameter names and shapes: the activation is
+    applied functionally rather than stored in ``self.layer``.
+    """
+
+    VALID_ACTIVATIONS = frozenset({'linear', 'relu'})
+
+    def __init__(self, c_txt_dim, cond_dim, device, activation='linear'):
         super(ConditioningAugmention, self).__init__()
         self.device = device
         self.c_txt_dim = c_txt_dim
         self.c_hat_txt_dim = cond_dim
-        self.layer = LBR(self.c_txt_dim, self.c_hat_txt_dim * 2, norm=False)
+        # Keep the Linear at layer.0 so historical state_dicts load strictly.
+        self.layer = LBR(self.c_txt_dim, self.c_hat_txt_dim * 2, norm=False, act=False)
+        self.set_activation(activation)
+
+    def set_activation(self, activation):
+        if activation not in self.VALID_ACTIVATIONS:
+            raise ValueError(
+                f"conditioning activation must be one of {sorted(self.VALID_ACTIVATIONS)}, "
+                f"got {activation!r}"
+            )
+        self.activation = activation
 
     def forward(self, x):
         '''
@@ -20,6 +45,8 @@ class ConditioningAugmention(nn.Module):
             log_sigma: log(sigma) of x extracted from self.layer.
         '''
         features = self.layer(x)
+        if self.activation == 'relu':
+            features = torch.relu(features)
         mu, log_sigma = features[:, :self.c_hat_txt_dim], features[:, self.c_hat_txt_dim:]
 
         # Reparameterization trick
@@ -225,7 +252,8 @@ class Generator_type_2(nn.Module):
         return out, out_image
 
 class Generator(nn.Module):
-    def __init__(self, in_chans, out_chans, noise_dim, cond_dim, clip_emb_dim, num_stage, device):
+    def __init__(self, in_chans, out_chans, noise_dim, cond_dim, clip_emb_dim, num_stage,
+                 device, conditioning_activation='linear'):
         super(Generator, self).__init__()
         self.device = device
 
@@ -240,6 +268,7 @@ class Generator(nn.Module):
 
         self.num_stage = num_stage
         self.num_res_layer_type2 = 2  # NOTE: you can change this
+        self.conditioning_activation = conditioning_activation
 
         # return layers
         self.cond_aug = self._conditioning_augmentation()
@@ -248,7 +277,15 @@ class Generator(nn.Module):
     def _conditioning_augmentation(self):
         # Define conditioning augmentation of conditonal vector introduced in
         # (StackGAN) https://openaccess.thecvf.com/content_ICCV_2017/papers/Zhang_StackGAN_Text_to_ICCV_2017_paper.pdf
-        return ConditioningAugmention(self.c_txt_dim, self.cond_dim, self.device)
+        return ConditioningAugmention(
+            self.c_txt_dim, self.cond_dim, self.device,
+            activation=self.conditioning_activation
+        )
+
+    def set_conditioning_activation(self, activation):
+        """Switch compatibility semantics without changing checkpoint parameters."""
+        self.cond_aug.set_activation(activation)
+        self.conditioning_activation = activation
 
     def _stage_generator(self, i):
         '''

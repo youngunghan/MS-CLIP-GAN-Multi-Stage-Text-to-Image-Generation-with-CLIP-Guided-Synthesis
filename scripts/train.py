@@ -14,7 +14,7 @@ from networks.generator import Generator
 from utils.utils import *
 from utils.utils import _unwrap  # underscore-prefixed names are not pulled in by `import *`
 from criteria.loss import *
-from trainer import train_step
+from trainer import train_step, warmup_training_losses
 from options.train_options import TrainOptions
 
 # torch.cuda.empty_cache()
@@ -22,6 +22,24 @@ from options.train_options import TrainOptions
 
 if __name__ == '__main__':
     args = TrainOptions().parse()
+
+    # Resolve the scheduler phase before constructing models/optimizers. An exact
+    # resume inside a prior --new_optim extension must recreate that phase's saved
+    # T_max (for example 50 for epochs [150, 200)), not the global num_epochs=200.
+    resume_metadata = None
+    if args.resume_checkpoint_path is not None and args.resume_epoch != -1:
+        resume_metadata = peek_checkpoint_metadata(
+            args.resume_checkpoint_path, args.resume_epoch, device='cpu'
+        )
+    cosine_horizon = scheduler_horizon(
+        args.num_epochs,
+        resume_epoch=args.resume_epoch,
+        new_optim=args.new_optim,
+        schedule_config=(
+            resume_metadata.get('schedule_config')
+            if resume_metadata is not None else None
+        ),
+    )
 
     # GPU 설정: --gpu_ids를 실제 CUDA 디바이스 인덱스로 사용한다.
     # (train.sh는 CUDA_VISIBLE_DEVICES를 설정하지 않으므로 --gpu_ids가 곧 물리 인덱스이며,
@@ -37,6 +55,19 @@ if __name__ == '__main__':
         device = torch.device("cpu")
         device_ids = []
         args.gpu_ids = []
+
+    # Hash data and all training-relevant Python sources once. Reusing this static
+    # payload in every checkpoint avoids multi-GB dataset rehashing at save time.
+    print('Computing training provenance (dataset/source SHA-256)')
+    args.training_provenance = build_training_provenance(
+        args.data_path, device_ids=device_ids
+    )
+    print(
+        'Training provenance: data='
+        f'{args.training_provenance["dataset"]["sha256"][:12]} '
+        'source='
+        f'{args.training_provenance["source"]["sha256"][:12]}'
+    )
 
     # base_options.parse()가 이미 checkpoint_path를 <checkpoints>/<name>/ckpt로 설정했으므로
     # 여기서 <name>을 다시 덧붙이지 않는다(이중 중첩 방지).
@@ -57,7 +88,8 @@ if __name__ == '__main__':
 
     # 모델 초기화
     G = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
-                 args.clip_embedding_dim, args.num_stage, device).to(device)
+                 args.clip_embedding_dim, args.num_stage, device,
+                 conditioning_activation=args.conditioning_activation).to(device)
     G.apply(weight_init)
 
     # Multi-GPU 설정
@@ -68,7 +100,8 @@ if __name__ == '__main__':
     D_lst = []
     for curr_stage in range(args.num_stage):
         D = Discriminator(args.g_out_chans, args.d_in_chans, args.d_out_chans,
-                         args.condition_dim, args.clip_embedding_dim, curr_stage, device).to(device)
+                         args.condition_dim, args.clip_embedding_dim, curr_stage, device,
+                         alignment_mode=args.alignment_mode).to(device)
         if len(device_ids) > 1:
             D = nn.DataParallel(D, device_ids=device_ids)
         D.apply(weight_init)
@@ -86,9 +119,11 @@ if __name__ == '__main__':
               f"diffaugment_policy={args.diffaugment_policy if args.use_diffaugment else '-'}")
 
     # Learning rate schedulers (resume보다 먼저 생성해야 상태를 복구할 수 있다)
-    scheduler_g = CosineAnnealingLR(optim_g, T_max=num_epochs)
-    scheduler_d_lst = [CosineAnnealingLR(optim_d, T_max=num_epochs)
+    scheduler_g = CosineAnnealingLR(optim_g, T_max=cosine_horizon)
+    scheduler_d_lst = [CosineAnnealingLR(optim_d, T_max=cosine_horizon)
                       for optim_d in optim_d_lst]
+    if args.new_optim:
+        print(f'New optimizer schedule spans {cosine_horizon} remaining epoch(s)')
 
     # EMA generator (optional): a temporal average of G. Built BEFORE resume so that
     # load_checkpoint can restore the saved EMA weights into it (EMA checkpoints keep
@@ -96,14 +131,29 @@ if __name__ == '__main__':
     G_ema = None
     if args.use_ema:
         G_ema = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
-                          args.clip_embedding_dim, args.num_stage, device).to(device)
+                          args.clip_embedding_dim, args.num_stage, device,
+                          conditioning_activation=args.conditioning_activation).to(device)
         G_ema.load_state_dict(_unwrap(G).state_dict())
         for p in G_ema.parameters():
             p.requires_grad_(False)
         G_ema.eval()
         print(f'EMA generator enabled (decay={args.ema_decay})')
 
-    # 체크포인트 로드 (optimizer + scheduler 상태까지 복구).
+    # Construct/freeze CLIP before restoring the checkpoint RNG. Model construction
+    # may consume random numbers; restoring after all model initialization is what
+    # makes the next epoch's sampler/noise sequence exact.
+    loss_fn = BCELoss()
+    clip_model, _ = CLIPConfig.load_clip(args.clip_model, device)
+    clip_model.eval()
+    for p in clip_model.parameters():
+        p.requires_grad_(False)
+    if args.use_mixed_loss:
+        # VGG construction/weight loading may consume CPU RNG. Warm the lazy cache
+        # before load_checkpoint restores RNG, so resumed and uninterrupted runs
+        # enter the next batch from the same recorded random state.
+        warmup_training_losses(args.use_mixed_loss, device)
+
+    # 체크포인트 로드 (optimizer + scheduler + compatibility mode + RNG 상태까지 복구).
     # path/epoch 중 하나만 지정하면 아무것도 로드하지 않은 채 resume_epoch+1부터 도는
     # 잘못된 런이 조용히 만들어지므로, 반쪽 지정은 즉시 에러로 막는다.
     if (args.resume_checkpoint_path is None) != (args.resume_epoch == -1):
@@ -117,13 +167,6 @@ if __name__ == '__main__':
                                          g_ema=G_ema)
         print('Resumed from saved checkpoint')
 
-    loss_fn = BCELoss()
-    clip_model, _ = CLIPConfig.load_clip(args.clip_model, device)
-    # CLIP is used only to guide the generator; freeze it so no spurious gradients/updates occur.
-    clip_model.eval()
-    for p in clip_model.parameters():
-        p.requires_grad_(False)
-
     for epoch in range(args.resume_epoch + 1, num_epochs):
         print(f"Epoch: {epoch} start")
         start_time = time.time()
@@ -136,7 +179,8 @@ if __name__ == '__main__':
             epoch=epoch, writer=writer,
             g_ema=G_ema, ema_decay=args.ema_decay, real_label_smooth=args.real_label_smooth,
             d_update_every=args.d_update_every,
-            use_diffaugment=args.use_diffaugment, diffaugment_policy=args.diffaugment_policy
+            use_diffaugment=args.use_diffaugment, diffaugment_policy=args.diffaugment_policy,
+            use_mismatched_condition=args.use_mismatched_condition
         )
 
         end_time = time.time()

@@ -15,3 +15,17 @@ class TestOptions(BaseOptions):
 
         parser.add_argument('--is_train', type=str2bool, default=False, choices=([True, False]))
         return parser
+
+    def validate(self, opt):
+        super().validate(opt)
+
+        def require(condition, message):
+            if not condition:
+                self.parser.error(message)
+
+        require(not opt.is_train, 'TestOptions requires --is_train false')
+        require(opt.load_epoch >= 0, '--load_epoch must be >= 0')
+        require(opt.batch_size > 0, '--batch_size must be > 0')
+        require(opt.print_freq > 0, '--print_freq must be > 0')
+        require(opt.max_batches == -1 or opt.max_batches > 0,
+                '--max_batches must be -1 or > 0')

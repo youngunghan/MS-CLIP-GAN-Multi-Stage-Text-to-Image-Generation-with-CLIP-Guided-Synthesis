@@ -57,11 +57,22 @@ class CondDiscriminator(nn.Module):
         return cond_out
 
 class AlignCondDiscriminator(nn.Module):
-    def __init__(self, in_chans, cond_dim, text_emb_dim):
+    """Predict text-space features from image features.
+
+    ``image_only`` zeroes the historical condition channels before the alignment
+    head.  This removes the trivial text-to-text shortcut while deliberately
+    retaining the old convolution's input shape, so old state_dicts still load.
+    ``legacy_conditioned`` reproduces the historical concatenation exactly.
+    """
+
+    VALID_MODES = frozenset({'image_only', 'legacy_conditioned'})
+
+    def __init__(self, in_chans, cond_dim, text_emb_dim, alignment_mode='image_only'):
         super(AlignCondDiscriminator, self).__init__()
         self.in_chans = in_chans
         self.cond_dim = cond_dim
         self.text_emb_dim = text_emb_dim
+        self.set_alignment_mode(alignment_mode)
 
         # Change the input tensor dimension [8Nd + projection_dim, 4, 4] into [1, 1, 1]
         self.align_net = nn.Sequential(
@@ -70,6 +81,14 @@ class AlignCondDiscriminator(nn.Module):
             CBR2d(self.in_chans * 8, self.text_emb_dim, kernel_size=4, stride=4, norm=False, act=False),
             # nn.Identity()
         )
+    def set_alignment_mode(self, alignment_mode):
+        if alignment_mode not in self.VALID_MODES:
+            raise ValueError(
+                f"alignment mode must be one of {sorted(self.VALID_MODES)}, "
+                f"got {alignment_mode!r}"
+            )
+        self.alignment_mode = alignment_mode
+
     def forward(self, x, c):
         '''
         Inputs:
@@ -82,7 +101,11 @@ class AlignCondDiscriminator(nn.Module):
         #c = c.view(-1, self.cond_dim, 1, 1).expand(-1, -1, 4, 4)
         #print(f'c.view(B, self.cond_dim, 1, 1).shape: {c.view(B, self.cond_dim, 1, 1).shape}')
         #print(f'c.view(B, self.cond_dim, 1, 1).expand(-1, -1, H, W).shape: {c.view(B, self.cond_dim, 1, 1).expand(-1, -1, H, W).shape}')
-        c = c.view(B, self.cond_dim, 1, 1).expand(-1, -1, H, W) # [B, 128, 1, 1] [B, 128, 4, 4]
+        if self.alignment_mode == 'image_only':
+            # Preserve the legacy convolution shape but prevent a text-only shortcut.
+            c = x.new_zeros(B, self.cond_dim, H, W)
+        else:
+            c = c.view(B, self.cond_dim, 1, 1).expand(-1, -1, H, W) # [B, 128, 1, 1] [B, 128, 4, 4]
         x = torch.cat((x, c), dim=1)
         #print(f'torch.cat((x, c), dim = 1).shape: {x.shape}')
         x = self.align_net(x)
@@ -94,7 +117,9 @@ class AlignCondDiscriminator(nn.Module):
         return align_out
 
 class Discriminator(nn.Module):
-    def __init__(self, img_chans, in_chans, out_chans, condition_dim, clip_text_embedding_dim, curr_stage, device):
+    def __init__(self, img_chans, in_chans, out_chans, condition_dim,
+                 clip_text_embedding_dim, curr_stage, device,
+                 alignment_mode='image_only'):
         super(Discriminator, self).__init__()
         self.img_chans = img_chans # g_out_chans
         self.in_chans = in_chans
@@ -103,6 +128,7 @@ class Discriminator(nn.Module):
         self.txt_emb_dim = clip_text_embedding_dim
         self.curr_stage = curr_stage
         self.device = device
+        self.alignment_mode = alignment_mode
 
         self.feature_net = self._feature_extractor()
         self.aec_net = self._aec_net()
@@ -183,39 +209,76 @@ class Discriminator(nn.Module):
     def _align_cond_discriminator(self):
         # Calculate semantic alignment loss like
         # (LAFITE) https://arxiv.org/pdf/2111.13792.pdf
-        return AlignCondDiscriminator(self.in_chans, self.cond_dim, self.txt_emb_dim)
+        return AlignCondDiscriminator(
+            self.in_chans, self.cond_dim, self.txt_emb_dim,
+            alignment_mode=self.alignment_mode
+        )
+
+    def set_alignment_mode(self, alignment_mode):
+        """Switch compatibility semantics without changing checkpoint parameters."""
+        self.align_cond_discriminator.set_alignment_mode(alignment_mode)
+        self.alignment_mode = alignment_mode
+
+    def _extract_features(self, img):
+        """Run the shared image trunk exactly once for one discriminator view."""
+        features = self.feature_net(img)
+        if features.shape[-1] == 16:
+            features = self.attention(features)
+        return self.aec_net(features)
 
     def forward(self,
                 img,
                 condition=None,  # for conditional loss (mu)
+                compute_alignment=True,
+                mismatched_condition=None,
+                compute_unconditional=False,
+                return_details=False,
                 ):
         '''
         Inputs:
             img: fake/real image, shape [3, H, W]
             condition: mu extracted from CANet, shape [projection_dim]
+            compute_alignment: skip the alignment head when its output is unused
+            mismatched_condition: optional wrong-text condition for the same image
+            compute_unconditional: include the unconditional head in detailed output
+            return_details: return a dict containing all requested heads
         Outputs:
             out: fake/real prediction result (common output of discriminator)
             align_out: f_real/f_fake extracted from self.align_cond_discriminator for contrastive learning
+            With return_details=True, a tensor-only dict of the requested heads is
+            returned instead; this shape is compatible with DataParallel gather.
         '''
-        # Extract features through progressive stages
-        x = img
-        features = []
+        prev_out = self._extract_features(img)
 
-        # Feature extraction
-        prev_out = self.feature_net(img)
-
-        # Apply self-attention at the middle layer (16x16)
-        if prev_out.shape[-1] == 16:  # Only apply attention at 16x16 resolution
-            prev_out = self.attention(prev_out)
-
-        prev_out = self.aec_net(prev_out)
+        if return_details:
+            if mismatched_condition is not None and condition is None:
+                raise ValueError('mismatched_condition requires a matched condition')
+            details = {}
+            if condition is not None:
+                details['conditional'] = torch.sigmoid(
+                    self.cond_discriminator(prev_out, condition).view(-1)
+                )
+                if compute_alignment:
+                    details['alignment'] = self.align_cond_discriminator(
+                        prev_out, condition
+                    )
+            if mismatched_condition is not None:
+                details['mismatched_conditional'] = torch.sigmoid(
+                    self.cond_discriminator(prev_out, mismatched_condition).view(-1)
+                )
+            if compute_unconditional or condition is None:
+                details['unconditional'] = torch.sigmoid(
+                    self.uncond_discriminator(prev_out).view(-1)
+                )
+            return details
 
         align_out = None
         if condition is None:
             out = self.uncond_discriminator(prev_out).view(-1)
         else:
             out = self.cond_discriminator(prev_out, condition).view(-1)
-            align_out = self.align_cond_discriminator(prev_out, condition)
+            if compute_alignment:
+                align_out = self.align_cond_discriminator(prev_out, condition)
 
-        out = nn.Sigmoid()(out)
+        out = torch.sigmoid(out)
         return out, align_out

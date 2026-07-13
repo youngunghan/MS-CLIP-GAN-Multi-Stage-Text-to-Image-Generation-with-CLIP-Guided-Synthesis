@@ -1,7 +1,16 @@
+#!/usr/bin/env python3
+
 import warnings
 warnings.filterwarnings(action="ignore")
 
 import os
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import clip
 import torch
 import torchvision
@@ -9,6 +18,7 @@ from utils.utils import *
 from config.config import CLIPConfig
 from networks.generator import Generator
 from options.test_options import TestOptions
+from scripts.checkpoint_config import apply_checkpoint_model_config
 
 @torch.no_grad()
 def main():
@@ -18,11 +28,15 @@ def main():
     gpu_ids = args.gpu_ids
     device = torch.device(f"cuda:{gpu_ids[0]}") if (torch.cuda.is_available() and len(gpu_ids) > 0) else torch.device("cpu")
 
+    # Resolve architecture and compatibility mode before constructing the model.
+    apply_checkpoint_model_config(args)
+
     clip_model, _ = CLIPConfig.load_clip(args.clip_model, device)
     clip_model.eval()
 
     G = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
-                  args.clip_embedding_dim, args.num_stage, device).to(device)
+                  args.clip_embedding_dim, args.num_stage, device,
+                  args.conditioning_activation).to(device)
 
     # Inference only needs the generator; discriminator checkpoints are not required.
     load_checkpoint(args, G, [None for _ in range(args.num_stage)],

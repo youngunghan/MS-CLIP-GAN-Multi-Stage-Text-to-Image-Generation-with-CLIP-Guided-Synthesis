@@ -8,6 +8,7 @@ __pycache__/
 runs/
 checkpoints/
 output/
+experiments/results/generated/
 *.pt
 *.pth
 
