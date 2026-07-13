@@ -793,7 +793,6 @@ def _validate_resume_scheduler(args, generator_state, metadata, scheduler_g=None
                 'legacy checkpoint has no scheduler state, so its LR phase cannot '
                 'be continued safely; use --new_optim to start an explicit new phase'
             )
-            return
         raise ValueError(
             'versioned checkpoint has no generator scheduler state; use '
             '--new_optim for a weight-only resume'
@@ -1200,6 +1199,11 @@ def load_checkpoint(args, g: torch.nn.Module, d_lst: List[torch.nn.Module],
                 sched_d.load_state_dict(dis_state['scheduler'])
 
     if args.is_train:
+        # Unlike the optimizer/scheduler/EMA blocks above, RNG restore is NOT
+        # gated on --new_optim: per the documented contract (train-eval-infer.md,
+        # "v2의 RNG만 복구한다"), --new_optim intentionally still restores the RNG
+        # state so the new cosine phase itself remains reproducible/re-resumable,
+        # even though it drops optimizer/scheduler state.
         if gen_state.get('rng_state') is not None:
             _restore_rng_state(gen_state['rng_state'])
         else:

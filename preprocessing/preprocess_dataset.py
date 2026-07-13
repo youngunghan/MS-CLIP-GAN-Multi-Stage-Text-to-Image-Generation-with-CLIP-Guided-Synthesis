@@ -7,6 +7,7 @@ import json
 import os
 import pickle
 import random
+import shutil
 import stat
 import sys
 import tarfile
@@ -444,6 +445,12 @@ def open_dest(
     ZIP output is staged in a sibling temporary file.  ``commit`` closes and
     fsyncs the complete archive before atomically replacing ``dest``; ``abort``
     removes the staged archive and leaves any existing destination untouched.
+
+    Folder output mirrors the same atomic pattern: files are written under a
+    sibling temporary directory and ``commit`` atomically renames it onto
+    ``dest``; ``abort`` removes the staged directory and leaves any existing
+    ``dest`` untouched (so a hard failure never leaves partial PNGs behind or
+    blocks a re-run).
     """
     dest_ext = file_ext(dest)
 
@@ -506,16 +513,18 @@ def open_dest(
 
         return '', zip_write_bytes, commit_zip, abort_zip
     else:
-        # If the output folder already exists, check that is is
-        # empty.
-        #
-        # Note: creating the output directory is not strictly
-        # necessary as folder_write_bytes() also mkdirs, but it's better
-        # to give an error message earlier in case the dest folder
-        # somehow cannot be created.
+        # If the output folder already exists, check that it is empty. This
+        # is checked eagerly (rather than only at commit time) so a bad
+        # --dest is reported before any work is staged.
         if os.path.isdir(dest) and len(os.listdir(dest)) != 0:
             error('--dest folder must be empty')
-        os.makedirs(dest, exist_ok=True)
+
+        parent = os.path.dirname(os.path.abspath(dest))
+        os.makedirs(parent, exist_ok=True)
+        temporary = tempfile.mkdtemp(
+            prefix=f'.{os.path.basename(dest)}.', suffix='.tmp', dir=parent
+        )
+        committed = False
 
         def folder_write_bytes(fname: str, data: Union[bytes, str]):
             os.makedirs(os.path.dirname(fname), exist_ok=True)
@@ -523,7 +532,20 @@ def open_dest(
                 if isinstance(data, str):
                     data = data.encode('utf8')
                 fout.write(data)
-        return dest, folder_write_bytes, lambda: None, lambda: None
+
+        def commit_folder():
+            nonlocal committed
+            # dest is guaranteed absent-or-empty by the eager guard above, and
+            # os.replace() atomically replaces an existing empty directory (same
+            # filesystem) in a single syscall, so no separate rmdir is needed.
+            os.replace(temporary, dest)
+            committed = True
+
+        def abort_folder():
+            if not committed:
+                shutil.rmtree(temporary, ignore_errors=True)
+
+        return temporary, folder_write_bytes, commit_folder, abort_folder
 
 #----------------------------------------------------------------------------
 
@@ -584,6 +606,15 @@ def encode_text_features(clip_model, captions, device):
     type=click.IntRange(CLIP_EMBEDDING_DIM, CLIP_EMBEDDING_DIM),
     required=True,
 )
+@click.option(
+    '--max-failure-frac',
+    help=(
+        'Tolerate up to this fraction of per-sample failures (corrupt image, '
+        'missing/empty caption, dropped transform) and still emit the dataset. '
+        'Default 0.0 keeps the strict all-or-nothing behavior: any failure aborts.'
+    ),
+    type=click.FloatRange(0.0, 1.0), default=0.0, show_default=True,
+)
 def convert_dataset(
     ctx: click.Context,
     source: str,
@@ -595,7 +626,8 @@ def convert_dataset(
     width: Optional[int],
     height: Optional[int],
     seed: int,
-    emb_dim: int
+    emb_dim: int,
+    max_failure_frac: float,
 ):
     """Build the RGB PNG + CLIP-feature archive consumed by this repository.
 
@@ -608,6 +640,12 @@ def convert_dataset(
 
     Output images must have uniform, square, power-of-two dimensions. Use
     ``--transform=center-crop --width=256 --height=256`` for the normal pipeline.
+
+    By default (``--max-failure-frac=0.0``) any per-sample failure aborts the
+    whole run and leaves the destination untouched. Pass ``--max-failure-frac``
+    above 0 to tolerate up to that fraction of skipped samples; the run still
+    emits the dataset (with only the successful samples) and logs a summary of
+    how many samples were skipped and why.
     """
     if emb_dim != CLIP_EMBEDDING_DIM:
         # Click validates this first; retain a direct-call guard for library users.
@@ -734,10 +772,21 @@ def convert_dataset(
             raise click.ClickException(
                 f'No samples were successfully preprocessed ({failure_count} failed)'
             )
-        if failure_count:
+        # num_files > 0 is guaranteed here: success_count > 0 implies
+        # success_count <= num_files.
+        failure_frac = failure_count / num_files
+        if failure_count and failure_frac > max_failure_frac:
             raise click.ClickException(
                 f'Preprocessing was incomplete: {success_count} succeeded, '
-                f'{failure_count} failed; destination was not replaced'
+                f'{failure_count} failed ({failure_frac:.1%} of {num_files}, '
+                f'allowed {max_failure_frac:.1%} via --max-failure-frac); '
+                f'destination was not replaced'
+            )
+        if failure_count:
+            print(
+                f'Tolerating {failure_count} failed/skipped sample(s) out of {num_files} '
+                f'({failure_frac:.1%} <= --max-failure-frac={max_failure_frac:.1%}); '
+                f'emitting dataset with the remaining {success_count} sample(s)'
             )
         if not (
             success_count == len(written_names)

@@ -6,6 +6,8 @@ import torch
 from torch.nn.utils import spectral_norm
 
 from dataset.dataloader import get_dataloader
+from networks.discriminator import Discriminator
+from networks.generator import Generator
 from scripts import trainer
 from scripts.trainer import frozen_discriminators, preserved_module_buffers
 
@@ -126,6 +128,129 @@ class LazyLossWarmupTests(unittest.TestCase):
             get_vgg.assert_not_called()
             trainer.warmup_training_losses(True, torch.device('cpu'))
             get_vgg.assert_called_once_with(torch.device('cpu'))
+
+
+# Shared tiny single-stage Generator/Discriminator dimensions for the real (non-mocked)
+# forward/training-step coverage below. curr_stage=0 / img size 64 mirrors the
+# smallest real config in tests/test_core_models.py's DetailedDiscriminatorForwardTests.
+_TINY_CLIP_EMB_DIM = 4
+_TINY_COND_DIM = 2
+_TINY_NOISE_DIM = 4
+_TINY_IMG_SIZE = 64
+
+
+def _build_tiny_generator(device):
+    return Generator(
+        in_chans=16, out_chans=3, noise_dim=_TINY_NOISE_DIM, cond_dim=_TINY_COND_DIM,
+        clip_emb_dim=_TINY_CLIP_EMB_DIM, num_stage=1, device=device,
+    )
+
+
+def _build_tiny_discriminator(device):
+    return Discriminator(
+        img_chans=3, in_chans=1, out_chans=1, condition_dim=_TINY_COND_DIM,
+        clip_text_embedding_dim=_TINY_CLIP_EMB_DIM, curr_stage=0, device=device,
+        alignment_mode='image_only',
+    )
+
+
+class _TinyRealDataset(torch.utils.data.Dataset):
+    """Minimal real (non-mocked) multi-stage sample source for a train_step smoke test.
+
+    Mirrors dataset.dataloader.MM_CelebA's __getitem__ contract: a list of
+    per-stage images (ascending resolution), a CLIP image embedding, and a CLIP
+    text embedding.
+    """
+
+    def __init__(self, length, clip_emb_dim, img_size):
+        self.length = length
+        self.clip_emb_dim = clip_emb_dim
+        self.img_size = img_size
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, index):
+        image = torch.randn(3, self.img_size, self.img_size)
+        img_feature = torch.randn(self.clip_emb_dim)
+        txt_feature = torch.randn(self.clip_emb_dim)
+        return [image], img_feature, txt_feature
+
+
+class _StubWriter:
+    """A do-nothing stand-in for SummaryWriter.add_scalar; TensorBoard I/O is not under test."""
+
+    def add_scalar(self, *args, **kwargs):
+        pass
+
+
+class RealTrainStepSmokeTest(unittest.TestCase):
+    def test_single_stage_train_step_runs_and_updates_params_with_finite_losses(self):
+        torch.manual_seed(0)
+        device = torch.device('cpu')
+        batch_size = 4
+
+        model_G = _build_tiny_generator(device)
+        model_D = _build_tiny_discriminator(device)
+
+        dataset = _TinyRealDataset(
+            length=batch_size, clip_emb_dim=_TINY_CLIP_EMB_DIM, img_size=_TINY_IMG_SIZE
+        )
+        train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+        optim_g = torch.optim.Adam(model_G.parameters(), lr=1e-3)
+        optim_d = torch.optim.Adam(model_D.parameters(), lr=1e-3)
+
+        g_params_before = [p.detach().clone() for p in model_G.parameters()]
+        d_params_before = [p.detach().clone() for p in model_D.parameters()]
+
+        d_loss_epoch, g_loss_epoch, save_txt_feature = trainer.train_step(
+            train_loader=train_loader, noise_dim=_TINY_NOISE_DIM, model_G=model_G,
+            model_D_lst=[model_D], optim_g=optim_g, optim_d_lst=[optim_d],
+            loss_fn=torch.nn.BCELoss(), num_stage=1,
+            use_uncond_loss=False, use_contrastive_loss=False, use_mixed_loss=False,
+            clip_model=None, gamma=1.0, lam=1.0, report_interval=10,
+            device=device, epoch=0, writer=_StubWriter(),
+        )
+
+        self.assertTrue(torch.isfinite(torch.tensor(d_loss_epoch)))
+        self.assertTrue(torch.isfinite(torch.tensor(g_loss_epoch)))
+        self.assertEqual(tuple(save_txt_feature.shape), (batch_size, _TINY_CLIP_EMB_DIM))
+
+        # Both the generator and discriminator must have taken a real optimizer
+        # step (not merely produced a loss number) for this to be a meaningful
+        # training-step smoke test.
+        self.assertTrue(any(
+            not torch.equal(before, after.detach())
+            for before, after in zip(g_params_before, model_G.parameters())
+        ))
+        self.assertTrue(any(
+            not torch.equal(before, after.detach())
+            for before, after in zip(d_params_before, model_D.parameters())
+        ))
+
+
+class RealGeneratorForwardTest(unittest.TestCase):
+    def test_forward_produces_finite_correctly_shaped_stage_output(self):
+        torch.manual_seed(0)
+        device = torch.device('cpu')
+        batch_size = 3
+
+        model_G = _build_tiny_generator(device)
+        txt_feature = torch.randn(batch_size, _TINY_CLIP_EMB_DIM)
+        noise = torch.randn(batch_size, _TINY_NOISE_DIM)
+
+        fake_images, mu, log_sigma = model_G(txt_feature, noise)
+
+        self.assertEqual(len(fake_images), 1)
+        self.assertEqual(
+            tuple(fake_images[0].shape), (batch_size, 3, _TINY_IMG_SIZE, _TINY_IMG_SIZE)
+        )
+        self.assertEqual(tuple(mu.shape), (batch_size, _TINY_COND_DIM))
+        self.assertEqual(tuple(log_sigma.shape), (batch_size, _TINY_COND_DIM))
+        self.assertTrue(torch.isfinite(fake_images[0]).all())
+        self.assertTrue(torch.isfinite(mu).all())
+        self.assertTrue(torch.isfinite(log_sigma).all())
 
 
 if __name__ == '__main__':

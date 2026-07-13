@@ -6,8 +6,20 @@ import random
 import zipfile
 from pathlib import Path
 
+import PIL.Image
 
-IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp'}
+
+def _file_ext(name) -> str:
+    return str(name).split('.')[-1]
+
+
+def is_image_ext(fname) -> bool:
+    """Match preprocess_dataset.py's is_image_ext(): any extension PIL can
+    decode. Both scripts must agree on this policy -- a stem that one accepts
+    and the other silently ignores turns into a spurious duplicate-stem error
+    or a split/preprocess mismatch downstream."""
+    ext = _file_ext(fname).lower()
+    return f'.{ext}' in PIL.Image.EXTENSION  # type: ignore
 
 
 def _unique_stems(image_paths, source_label):
@@ -26,6 +38,7 @@ def _unique_stems(image_paths, source_label):
 
 def get_all_image_files(source_path):
     """Get all image files from the source directory or zip file"""
+    PIL.Image.init()  # type: ignore  # populate PIL.Image.EXTENSION before filtering
     image_files = []
 
     # Check if source is a directory containing image.zip
@@ -40,7 +53,7 @@ def get_all_image_files(source_path):
             # archive may store images at top level, under image/ or images/, etc.)
             image_paths = [
                 f for f in all_files
-                if not f.endswith('/') and Path(f).suffix.lower() in IMAGE_EXTENSIONS
+                if not f.endswith('/') and is_image_ext(f)
             ]
             print("DEBUG: First 10 filtered files:", image_paths[:10])
             image_files = _unique_stems(image_paths, image_zip)
@@ -49,7 +62,7 @@ def get_all_image_files(source_path):
         image_dir = Path(os.path.join(source_path, 'images'))
         image_paths = [
             path for path in image_dir.rglob('*')
-            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+            if path.is_file() and is_image_ext(path)
         ]
         image_files = _unique_stems(image_paths, str(image_dir))
 

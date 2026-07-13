@@ -24,6 +24,10 @@ bash preprocessing/split_dataset.sh   # 기본 train_ratio 0.85, seed 42
 ```
 
 - [split_dataset.py](../../preprocessing/split_dataset.py) `split_dataset()`가 zip 내 이미지(확장자 기준, 경로 prefix 무관)를 시드 셔플 후 분할 → `data/celeba_filenames_train.pickle`·`data/celeba_filenames_test.pickle`.
+- 이미지 확장자 판정은 `preprocess_dataset.py`의 `is_image_ext()`와 같은 정책(PIL이 디코드
+  가능하다고 등록한 모든 확장자)을 쓴다. 두 스크립트가 서로 다른 확장자 집합을 쓰면 한쪽만
+  보는 파일이 반대쪽에서 spurious한 duplicate-stem 에러나 split/preprocess 불일치로
+  이어지므로, 정책은 한 곳에서만 정의한다.
 - `data/` 디렉터리는 자동 생성된다.
 - image↔caption identity는 `Path.stem`이다. 서로 다른 경로·확장자가 같은 stem을
   쓰면 어느 caption과 짝지을지 모호하므로 충돌 경로 전체를 출력하고 분할 전에 실패한다.
@@ -48,15 +52,23 @@ bash preprocessing/preprocess_test.sh    # → data/testset.zip
 | `--width`/`--height` | 256 | 출력 해상도(2의 거듭제곱) |
 | `--seed` | 42 | image-feature crop용 Python/NumPy/Torch/CUDA RNG; deterministic cuDNN 설정 |
 | `--emb_dim` | 512 | CLIP ViT-B/32 피처 차원 |
+| `--max-failure-frac` | 0.0 | 허용할 per-sample 실패 비율. 기본값 0.0은 기존과 동일하게 **단 한 sample 실패도 즉시 abort**한다 |
 
 `--emb_dim`은 필수이며 `512`만 허용한다. source image는 mode가 grayscale/RGBA여도
 RGB로 정규화한 뒤 저장한다.
 
-> ✅ 정상 pipeline의 ZIP 출력은 sibling temporary archive에 먼저 완성한다. image/text
-> decode, 빈 caption, 선택 stem 누락 등 **단 한 sample이라도 실패하면 전체 run을
-> non-zero로 끝내고 기존 destination ZIP을 보존**한다. 모든 sample과 metadata가 맞을
-> 때만 fsync 후 `os.replace()`한다. `KeyboardInterrupt`, `SystemExit`, CUDA OOM도
-> 삼키지 않는다. directory destination은 이 atomic-replace 계약 대상이 아니다.
+> ✅ 정상 pipeline의 ZIP/directory 출력은 sibling temporary(ZIP은 파일, directory는
+> 디렉터리)에 먼저 완성한다. image/text decode, 빈 caption, 선택 stem 누락, transform이
+> sample을 drop하는 경우 등 **실패 비율이 `--max-failure-frac`을 넘으면 전체 run을
+> non-zero로 끝내고 기존 destination을 보존**한다(directory destination도 ZIP과 동일하게
+> staging 후 `os.replace()`하므로, hard-fail 시 partial PNG가 남거나 재실행을 막지 않는다).
+> 모든 sample과 metadata가 맞을 때만(또는 실패 비율이 허용치 이내일 때) fsync/replace한다.
+> `KeyboardInterrupt`, `SystemExit`, CUDA OOM도 삼키지 않는다.
+>
+> ✅ `--max-failure-frac`을 0보다 크게 주면 그 비율 이하의 per-sample 실패(손상 이미지,
+> 비어 있는 caption, transform이 drop한 sample 등)를 허용하고 **성공한 sample만으로
+> dataset을 그대로 emit**한다. 몇 개가 왜 skip되었는지 콘솔에 요약을 남긴다. 이 옵션을
+> 생략하면(기본 0.0) 동작은 기존과 byte-identical하다.
 >
 > ✅ ZIP entry timestamp·permission과 JSON 순서를 고정하고 model load 뒤 `--seed`를
 > 적용한다. 같은 input·code·package·device 환경에서는 byte-stable ZIP을 목표로 한다.
