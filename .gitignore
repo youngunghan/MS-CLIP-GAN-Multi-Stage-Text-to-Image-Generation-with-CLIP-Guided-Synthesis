@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Experiment outputs
+runs/
+checkpoints/
+output/
+experiments/results/generated/
+*.pt
+*.pth
+
+# Data / artifacts
+data/
+*.zip
+*.pickle
+
+# Env / editor
+.venv/
+.env
+.vscode/
+.idea/
+.DS_Store
