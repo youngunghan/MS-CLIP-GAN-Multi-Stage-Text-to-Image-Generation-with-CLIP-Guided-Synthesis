@@ -24,7 +24,9 @@ class VGGPerceptualLoss(nn.Module):
     def __init__(self, device):
         super().__init__()
         # Load pretrained VGG16 and extract specific feature layers
-        vgg = models.vgg16(pretrained=True).features.eval()
+        vgg = models.vgg16(
+            weights=models.VGG16_Weights.IMAGENET1K_V1
+        ).features.eval()
         self.vgg_layers = nn.ModuleList([
             vgg[:4],   # relu1_2
             vgg[4:9],  # relu2_2
@@ -104,6 +106,11 @@ def contrastive_loss_D(d_out_align, txt_feature, tau=0.5):
         L_cont: contrastive loss value (scalar)
     '''
     batch_size = d_out_align.size(0)
+    if batch_size < 2:
+        raise ValueError(
+            'contrastive_loss_D requires at least two samples; a singleton batch '
+            'has no negatives'
+        )
     d = normalize(d_out_align.view(batch_size, -1))
     t = normalize(txt_feature.view(batch_size, -1))
 
@@ -116,7 +123,8 @@ def D_loss(real_image, fake_image, model_D, loss_fn,
                use_uncond_loss, use_contrastive_loss,
                gamma,
                mu, txt_feature,
-               d_fake_label, d_real_label, diffaug=None):
+               d_fake_label, d_real_label, diffaug=None,
+               use_mismatched_condition=True):
 
     loss_d_comp = {}
 
@@ -125,31 +133,75 @@ def D_loss(real_image, fake_image, model_D, loss_fn,
         real_image = DiffAugment(real_image, policy=diffaug)
         fake_image = DiffAugment(fake_image, policy=diffaug)
 
-    d_out_cond, d_out_align_fake = model_D(img=fake_image, condition=mu,)
-    loss_d_comp["d_loss_fake_cond"] = loss_fn(d_out_cond, d_fake_label)
+    mismatched_mu = (
+        mu.roll(shifts=1, dims=0)
+        if use_mismatched_condition and real_image.shape[0] > 1 else None
+    )
+    fake_details = model_D(
+        img=fake_image, condition=mu,
+        compute_alignment=use_contrastive_loss,
+        compute_unconditional=use_uncond_loss,
+        return_details=True,
+    )
+    loss_d_comp["d_loss_fake_cond"] = loss_fn(
+        fake_details['conditional'], d_fake_label
+    )
 
-    d_out_cond, d_out_align_real = model_D(img=real_image, condition=mu,)
-    loss_d_comp["d_loss_real_cond"] = loss_fn(d_out_cond, d_real_label)
+    real_details = model_D(
+        img=real_image, condition=mu,
+        compute_alignment=use_contrastive_loss,
+        mismatched_condition=mismatched_mu,
+        compute_unconditional=use_uncond_loss,
+        return_details=True,
+    )
+    loss_d_comp["d_loss_real_cond"] = loss_fn(
+        real_details['conditional'], d_real_label
+    )
+
+    # A real image paired with another sample's text is a conditional negative.
+    # Without this term, the conditional discriminator only learns real-vs-fake and
+    # is never directly required to check whether real content matches its text.
+    # A one-position cyclic shift guarantees no fixed points for every B > 1.
+    if mismatched_mu is not None:
+        loss_d_comp["d_loss_real_mismatched_cond"] = loss_fn(
+            real_details['mismatched_conditional'], d_fake_label
+        )
+        # Preserve the original 1:1 positive/negative mass: matched real keeps
+        # weight 1 while generated-fake and mismatched-real share negative weight 1.
+        # Otherwise adding the matching supervision would also increase total D
+        # scale by 50%, confounding the intended change with a D/G balance change.
+        loss_d_comp["d_loss_fake_cond"] = (
+            0.5 * loss_d_comp["d_loss_fake_cond"]
+        )
+        loss_d_comp["d_loss_real_mismatched_cond"] = (
+            0.5 * loss_d_comp["d_loss_real_mismatched_cond"]
+        )
 
     # NOTE: This is a vanilla (Sigmoid + BCE) GAN with spectral normalization in the
     # discriminator for Lipschitz control. The previous WGAN-GP gradient penalty was
     # removed because it is inconsistent with a bounded (sigmoid) probability output.
 
     if use_uncond_loss:
-        d_out_uncond, _ = model_D(img=fake_image, condition=None,)
-        loss_d_comp["d_loss_fake_uncond"] = loss_fn(d_out_uncond, d_fake_label)
-
-        d_out_uncond, _ = model_D(img=real_image, condition=None,)
-        loss_d_comp["d_loss_real_uncond"] = loss_fn(d_out_uncond, d_real_label)
+        loss_d_comp["d_loss_fake_uncond"] = loss_fn(
+            fake_details['unconditional'], d_fake_label
+        )
+        loss_d_comp["d_loss_real_uncond"] = loss_fn(
+            real_details['unconditional'], d_real_label
+        )
 
     if use_contrastive_loss:
-        loss_d_comp['d_loss_fake_cond_contrastive'] = gamma * contrastive_loss_D(d_out_align_fake, txt_feature)
-        loss_d_comp['d_loss_real_cond_contrastive'] = gamma * contrastive_loss_D(d_out_align_real, txt_feature)
+        loss_d_comp['d_loss_fake_cond_contrastive'] = gamma * contrastive_loss_D(fake_details['alignment'], txt_feature)
+        loss_d_comp['d_loss_real_cond_contrastive'] = gamma * contrastive_loss_D(real_details['alignment'], txt_feature)
 
     d_loss = gather_all(loss_d_comp)
     return d_loss
 
 def contrastive_loss_G(fake_image, clip_model, txt_embedding, device, tau=0.5):
+    if fake_image.shape[0] < 2:
+        raise ValueError(
+            'contrastive_loss_G requires at least two samples; a singleton batch '
+            'has no negatives'
+        )
     clip_norm_img = CLIPConfig.get_transform()(
         CLIPConfig.denormalize_image(torch.clamp(fake_image, -1, 1))
     ).to(device)
@@ -178,17 +230,23 @@ def G_loss(real_image, fake_image, model_D, loss_fn,
     # the CLIP (contrastive_loss_G) and VGG (mixed_loss) terms below use the RAW fake.
     fake_for_d = DiffAugment(fake_image, policy=diffaug) if diffaug else fake_image
 
-    g_out_cond, g_out_align = model_D(img=fake_for_d, condition=mu,)
-    loss_g_comp["g_loss_cond"] = loss_fn(g_out_cond, g_label)
+    details = model_D(
+        img=fake_for_d, condition=mu,
+        compute_alignment=use_contrastive_loss,
+        compute_unconditional=use_uncond_loss,
+        return_details=True,
+    )
+    loss_g_comp["g_loss_cond"] = loss_fn(details['conditional'], g_label)
 
     if use_uncond_loss:
-        g_out_uncond, _ = model_D(img=fake_for_d, condition=None,)
-        loss_g_comp["g_loss_uncond"] = loss_fn(g_out_uncond, g_label)
+        loss_g_comp["g_loss_uncond"] = loss_fn(
+            details['unconditional'], g_label
+        )
 
     if use_contrastive_loss:
         if min(fake_image.shape[-2:]) >= CLIPConfig.MIN_QUALITY_SIZE:
             loss_g_comp['g_loss_cond_contrastive'] = lam * contrastive_loss_G(fake_image, clip_model, txt_feature, device)
-        loss_g_comp['d_loss_cond_contrastive'] = gamma * contrastive_loss_D(g_out_align, txt_feature)
+        loss_g_comp['d_loss_cond_contrastive'] = gamma * contrastive_loss_D(details['alignment'], txt_feature)
 
     # Add EIGGAN mixed loss
     if use_mixed_loss:

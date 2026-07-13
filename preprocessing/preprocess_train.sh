@@ -1,4 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$REPO"
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
 # Train dataset preprocessing
 python preprocessing/preprocess_dataset.py \

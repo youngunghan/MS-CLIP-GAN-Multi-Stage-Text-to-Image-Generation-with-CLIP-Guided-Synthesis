@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Plot training curves: (left) per-epoch d_loss/g_loss parsed from the train log,
 (right) standard FID + IS vs epoch from eval_curve.py's JSON.
 

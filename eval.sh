@@ -1,10 +1,13 @@
-#!/bin/bash
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+#!/usr/bin/env bash
+set -Eeuo pipefail
+REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+cd "$REPO"
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
 # Usage: ./eval.sh <CKPT_DIR> [EPOCH]
 # CKPT_DIR contains epoch_<EPOCH>_Gen.pt. Default EPOCH=149 matches train.sh's
 # defaults (150 epochs; the final epoch is always checkpointed).
-if [ -z "$1" ]; then
+if [[ $# -lt 1 ]]; then
   echo "Usage: ./eval.sh <CKPT_DIR> [EPOCH]" >&2
   echo "  e.g. ./eval.sh ./checkpoints/<run_name>/ckpt 149" >&2
   exit 1

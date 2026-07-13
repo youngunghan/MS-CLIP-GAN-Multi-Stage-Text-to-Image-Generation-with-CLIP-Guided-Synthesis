@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Reproduce the FID feature-space pitfall on the shipped best checkpoint.
 
 Same generator, same real/fake images, two extractors:
