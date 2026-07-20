@@ -1,0 +1,219 @@
+name: No AI Attribution
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+    # Explicit types (GitHub's default omits `edited`): without `edited`, a PR
+    # that already passed CI can have its title/body edited afterward to add
+    # an attribution line without the check re-running, and a "Squash and
+    # merge" seeds the squash commit message from the (now polluted) PR
+    # title/body -- landing polluted history on the target branch under a
+    # stale green check.
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan commit messages and PR title/body for AI/Claude authorship attribution
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -e
+
+          # Matches: Co-Authored-By: Claude ..., Co-authored-by: ... <noreply@anthropic.com>,
+          # "Generated with Claude Code", robot-emoji trailers, Assisted-by: Claude/etc.,
+          # or a bare <noreply@anthropic.com> address -- case-insensitive.
+          #
+          # NOTE (keep in sync -- canonical source is
+          # C:\Users\<user>\.githooks\ai-attribution-pattern.sh, also embedded here and in
+          # C:\Users\<user>\.githooks\commit-msg / pre-push; this file cannot source the
+          # shared file because GitHub-hosted runners cannot read the user's home directory):
+          # - Two combined forms, because a single anchor cannot be correct for both
+          #   single-line and multi-line fields:
+          #     * pattern_body     -- multi-line commit message / PR body. co-authored-by
+          #       and assisted-by are ANCHORED to the start of their own line (optionally
+          #       preceded by whitespace) because real git trailers always start their own
+          #       line -- this avoids false-blocking prose that merely quotes/discusses the
+          #       banned trailer syntax mid-paragraph.
+          #     * pattern_subject  -- a single-line field with no "body" of its own: a
+          #       commit SUBJECT line (first line only) or a PR TITLE. UNANCHORED, because a
+          #       subject/title like "Fix parser - Assisted-by: Claude" has non-whitespace
+          #       before the trailer keyword and would otherwise sail past the anchored form
+          #       -- and since `edited` (see the pull_request trigger above) re-runs this
+          #       check on title edits and a default squash-merge seeds the squash commit
+          #       subject from the PR title, that would be a live bypass of the ban. Do NOT
+          #       use this form against a multi-line body -- it would reintroduce the
+          #       mid-paragraph false-block the anchored form exists to avoid. Trade-off
+          #       accepted: a one-line commit message or PR title that itself quotes the
+          #       trailer syntax as prose is blocked again by this form -- closing the
+          #       sneaky-bypass gap outweighs that rare inconvenience.
+          #   generated-with / robot-emoji / noreply@anthropic are content markers, not
+          #   trailers, so they intentionally still match anywhere in the line in both forms.
+          # - assisted-by uses an explicit AI vendor/tool name list instead of a bare "ai"
+          #   alternative, because bare "ai" matches as a substring anywhere in the line and
+          #   wrongly rejects legitimate human names/words that merely contain the letters
+          #   "ai" (e.g. "Assisted-by: Claire Jones", or a person actually named "Ai").
+          # - Vendor/tool names and "claude" in the content marker are wrapped in \b...\b
+          #   word boundaries (GNU grep -E, as used on ubuntu-latest) so a token merely
+          #   containing a vendor name as a substring (e.g. "@gptaylor", "Copiloting") does
+          #   not false-positive. Known narrower residual: adjacent-but-non-word-char cases
+          #   (e.g. "co-pilot-ish") can still match -- accepted follow-up, not exact
+          #   whole-word matching.
+          # - Locale (2026-07-14, measured bug -- keep in sync with the shared hook file):
+          #   under LC_ALL=C.UTF-8 -- which is BOTH the locale git itself hands to hooks AND
+          #   the ubuntu-latest runner's default locale -- GNU grep's -i handling of the 🤖
+          #   alternative silently fails to match, even though the identical pattern matches
+          #   fine under LC_ALL=C or an unset locale. A hand-run `grep` test (typically run
+          #   with no LC_ALL set) hid this: it "passed" by hand while this exact step was
+          #   dead on ubuntu-latest. Pin LC_ALL=C/LANG=C before every grep below (C still
+          #   case-folds ASCII, so -i keeps working for every ASCII alternative), and back
+          #   the emoji check with a second, locale-independent raw-byte `grep -F` match --
+          #   do not rely on the literal 🤖 character surviving encoding/locale round-trips
+          #   in this YAML file alone. Proven end-to-end by ~/.githooks/selftest.sh under
+          #   both LC_ALL=C and LC_ALL=C.UTF-8, not by hand-running grep.
+          export LC_ALL=C
+          export LANG=C
+
+          # - Vendor list (2026-07-14, 4th round, measured bug -- keep in sync with the
+          #   shared hook file): co-authored-by previously recognized only
+          #   claude|anthropic|noreply@anthropic while assisted-by (in this same pattern
+          #   string) already enumerated the full vendor set gpt|openai|copilot|gemini|codex --
+          #   so a REAL AI-authorship trailer from a non-Claude vendor, notably GitHub
+          #   Copilot's actual literal coding-agent trailer "Co-authored-by: Copilot
+          #   <175728472+Copilot@users.noreply.github.com>", passed undetected through every
+          #   enforcement layer sharing this pattern (this CI copy, plus commit-msg/pre-push).
+          #   Fixed by using the identical vendor alternation on both sides. This also folds
+          #   in bot-address coverage for free: a coding-agent trailer's noreply address
+          #   embeds the vendor name in its local-part (e.g.
+          #   "...+Copilot@users.noreply.github.com"), and since the vendor word is
+          #   \b-bounded there (surrounded by "+"/"@", both non-word chars), the existing
+          #   anchored-trailer + vendor-word match already catches it -- no separate
+          #   address-only pattern is needed, and a genuinely human co-author trailer like
+          #   "Co-authored-by: Jane Doe <jane@users.noreply.github.com>" still does not match,
+          #   because "jane" is not a vendor word. Do NOT blanket-match
+          #   "@users.noreply.github.com" itself -- real humans use that address format too;
+          #   only the vendor-word alternation inside an already-anchored trailer line should
+          #   trigger.
+          trailer_anchored='^[[:space:]]*co-authored-by:.*\b(claude|anthropic|noreply@anthropic|gpt|openai|copilot|gemini|codex)\b|^[[:space:]]*assisted-by:.*\b(claude|anthropic|gpt|openai|copilot|gemini|codex)\b'
+          trailer_unanchored='co-authored-by:.*\b(claude|anthropic|noreply@anthropic|gpt|openai|copilot|gemini|codex)\b|assisted-by:.*\b(claude|anthropic|gpt|openai|copilot|gemini|codex)\b'
+          content='generated with .*\bclaude\b|🤖|<noreply@anthropic\.com>'
+          pattern_body="$trailer_anchored|$content"
+          pattern_subject="$trailer_unanchored|$content"
+          # Byte-level fixed-string needle for the robot emoji, ORed into every check
+          # below alongside the regex path (see the locale NOTE above).
+          robot_emoji_bytes=$(printf '\360\237\244\226')
+
+          attribution_match() {
+            # $1 = pattern ($pattern_body or $pattern_subject), $2 = text to test.
+            printf '%s\n' "$2" | grep -Eiq "$1" && return 0
+            printf '%s\n' "$2" | grep -Fq "$robot_emoji_bytes" && return 0
+            return 1
+          }
+
+          attribution_grep() {
+            # $1 = pattern, $2 = text -- prints the offending line(s), if any.
+            # Diagnostic-only: under `set -e` (this script sets it above), a
+            # bare grep that finds nothing exits 1 and would abort the script
+            # before the friendly summary/remediation block ever prints --
+            # `|| true` keeps both greps non-terminating so the full
+            # offending-line list always prints. Exit status is fixed at 0
+            # via `return 0`; nonzero exit for a real violation is driven by
+            # `found` / `exit 1` further down, not by this function.
+            printf '%s\n' "$2" | grep -Ei "$1" || true
+            printf '%s\n' "$2" | grep -F "$robot_emoji_bytes" || true
+            return 0
+          }
+
+          found=0
+          zero="0000000000000000000000000000000000000000"
+
+          check_commit_range() {
+            range="$1"
+            for c in $(git rev-list "$range" 2>/dev/null); do
+              msg=$(git log -1 --format=%B "$c")
+              subject=$(git log -1 --format=%s "$c")
+              bad_commit=0
+              attribution_match "$pattern_body" "$msg" && bad_commit=1
+              attribution_match "$pattern_subject" "$subject" && bad_commit=1
+              if [ "$bad_commit" -eq 1 ]; then
+                echo "::error::Commit $c carries AI/Claude authorship attribution:"
+                attribution_grep "$pattern_body" "$msg"
+                attribution_grep "$pattern_subject" "$subject"
+                found=1
+              fi
+            done
+          }
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ -n "$PR_BASE_SHA" ] && [ -n "$PR_HEAD_SHA" ] && git cat-file -e "$PR_BASE_SHA" 2>/dev/null; then
+              check_commit_range "$PR_BASE_SHA..$PR_HEAD_SHA"
+            elif [ -n "$PR_HEAD_SHA" ]; then
+              check_commit_range "$PR_HEAD_SHA"
+            fi
+
+            # PR title is a single-line field with no body of its own -- use the
+            # unanchored subject form (see NOTE above).
+            if attribution_match "$pattern_subject" "$PR_TITLE"; then
+              echo "::error::PR title carries AI/Claude authorship attribution: $PR_TITLE"
+              found=1
+            fi
+            # PR body is free-form multi-line text -- use the anchored body form so
+            # prose quoting the trailer syntax mid-paragraph is not false-blocked.
+            if attribution_match "$pattern_body" "$PR_BODY"; then
+              echo "::error::PR body carries AI/Claude authorship attribution:"
+              attribution_grep "$pattern_body" "$PR_BODY"
+              found=1
+            fi
+          else
+            if [ -n "$PUSH_BEFORE_SHA" ] && [ "$PUSH_BEFORE_SHA" != "$zero" ] && git cat-file -e "$PUSH_BEFORE_SHA" 2>/dev/null; then
+              check_commit_range "$PUSH_BEFORE_SHA..$PUSH_AFTER_SHA"
+            else
+              # New branch/ref, or before-sha unavailable: scan everything reachable
+              # from the pushed tip that isn't already on the default branch.
+              range_commits=$(git rev-list "$PUSH_AFTER_SHA" --not --remotes 2>/dev/null || true)
+              if [ -z "$range_commits" ]; then
+                check_commit_range "$PUSH_AFTER_SHA"
+              else
+                for c in $range_commits; do
+                  msg=$(git log -1 --format=%B "$c")
+                  subject=$(git log -1 --format=%s "$c")
+                  bad_commit=0
+                  attribution_match "$pattern_body" "$msg" && bad_commit=1
+                  attribution_match "$pattern_subject" "$subject" && bad_commit=1
+                  if [ "$bad_commit" -eq 1 ]; then
+                    echo "::error::Commit $c carries AI/Claude authorship attribution:"
+                    attribution_grep "$pattern_body" "$msg"
+                    attribution_grep "$pattern_subject" "$subject"
+                    found=1
+                  fi
+                done
+              fi
+            fi
+          fi
+
+          if [ "$found" -ne 0 ]; then
+            echo ""
+            echo "AI/Claude authorship attribution was found (see the ::error:: lines above)."
+            echo "Fix it: amend the offending commit (git commit --amend), or run an"
+            echo "interactive rebase (git rebase -i) to edit older commits, to remove the"
+            echo "attribution line(s); edit the PR title/body directly on GitHub if that is"
+            echo "where it was found. Then force-push the branch (or update the PR) and this"
+            echo "check will re-run automatically."
+            exit 1
+          fi
+
+          echo "No AI/Claude authorship attribution found."
