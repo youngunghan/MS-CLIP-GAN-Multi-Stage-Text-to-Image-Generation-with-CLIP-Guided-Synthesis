@@ -174,13 +174,14 @@ if __name__ == '__main__':
         d_loss, g_loss, txt_feature = train_step(
             train_loader, args.noise_dim, G, D_lst, optim_g, optim_d_lst,
             loss_fn, args.num_stage, args.use_uncond_loss, args.use_contrastive_loss,
-            args.use_mixed_loss, clip_model, gamma=5, lam=10,
+            args.use_mixed_loss, clip_model, gamma=args.gamma, lam=args.lam,
             report_interval=args.report_interval, device=device,
             epoch=epoch, writer=writer,
             g_ema=G_ema, ema_decay=args.ema_decay, real_label_smooth=args.real_label_smooth,
             d_update_every=args.d_update_every,
             use_diffaugment=args.use_diffaugment, diffaugment_policy=args.diffaugment_policy,
-            use_mismatched_condition=args.use_mismatched_condition
+            use_mismatched_condition=args.use_mismatched_condition,
+            cond_warmup_epochs=args.cond_warmup_epochs, cond_ramp_epochs=args.cond_ramp_epochs
         )
 
         end_time = time.time()

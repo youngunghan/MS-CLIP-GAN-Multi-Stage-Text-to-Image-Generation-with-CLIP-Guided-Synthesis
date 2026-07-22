@@ -119,12 +119,33 @@ def contrastive_loss_D(d_out_align, txt_feature, tau=0.5):
     L_cont = cross_entropy(logits, labels)
     return L_cont
 
+def conditioning_gate(epoch, warmup_epochs, ramp_epochs):
+    """Return the [0, 1] multiplier for D's conditioning-pressure terms at `epoch`.
+
+    For the first `warmup_epochs` epochs the gate is 0 (conditioning pressure fully
+    disabled) so the discriminator can first learn plain real/fake separation
+    without its shared image trunk being pulled toward the text-alignment
+    objective. After warm-up the gate switches to 1, either immediately
+    (`ramp_epochs == 0`, a hard switch) or linearly over `ramp_epochs` further
+    epochs (reaching exactly 1.0 at the last ramp epoch and staying there).
+
+    `warmup_epochs == 0` and `ramp_epochs == 0` (both defaults) always return
+    1.0, reproducing the original always-on conditioning pressure bit-for-bit.
+    """
+    if epoch < warmup_epochs:
+        return 0.0
+    if ramp_epochs <= 0:
+        return 1.0
+    progress = (epoch - warmup_epochs + 1) / ramp_epochs
+    return min(1.0, progress)
+
 def D_loss(real_image, fake_image, model_D, loss_fn,
                use_uncond_loss, use_contrastive_loss,
                gamma,
                mu, txt_feature,
                d_fake_label, d_real_label, diffaug=None,
-               use_mismatched_condition=True):
+               use_mismatched_condition=True,
+               cond_gate=1.0):
 
     loss_d_comp = {}
 
@@ -133,13 +154,28 @@ def D_loss(real_image, fake_image, model_D, loss_fn,
         real_image = DiffAugment(real_image, policy=diffaug)
         fake_image = DiffAugment(fake_image, policy=diffaug)
 
-    mismatched_mu = (
-        mu.roll(shifts=1, dims=0)
-        if use_mismatched_condition and real_image.shape[0] > 1 else None
+    # cond_gate (see conditioning_gate / --cond_warmup_epochs / --cond_ramp_epochs)
+    # scales exactly the two term families that backprop through D's SHARED IMAGE
+    # TRUNK on top of its real/fake heads: the gamma-weighted alignment InfoNCE
+    # terms below, and the mismatched-condition negative. The plain real/fake BCE
+    # (d_loss_fake_cond / d_loss_real_cond / the *_uncond terms) is NEVER gated --
+    # it must always train from epoch 0 so D learns real/fake separation first.
+    # cond_gate == 1.0 (the default, e.g. --cond_warmup_epochs 0) reproduces the
+    # original always-on behaviour exactly.
+    #
+    # `gamma > 0` is also required: with --gamma 0 the alignment terms are zero-
+    # weighted anyway, so skip the alignment head forward (and the BatchNorm
+    # running-stat updates it would otherwise perform) instead of computing it
+    # only to multiply it away.
+    gated_contrastive = use_contrastive_loss and cond_gate > 0.0 and gamma > 0.0
+    gated_mismatched = (
+        use_mismatched_condition and cond_gate > 0.0 and real_image.shape[0] > 1
     )
+
+    mismatched_mu = mu.roll(shifts=1, dims=0) if gated_mismatched else None
     fake_details = model_D(
         img=fake_image, condition=mu,
-        compute_alignment=use_contrastive_loss,
+        compute_alignment=gated_contrastive,
         compute_unconditional=use_uncond_loss,
         return_details=True,
     )
@@ -149,7 +185,7 @@ def D_loss(real_image, fake_image, model_D, loss_fn,
 
     real_details = model_D(
         img=real_image, condition=mu,
-        compute_alignment=use_contrastive_loss,
+        compute_alignment=gated_contrastive,
         mismatched_condition=mismatched_mu,
         compute_unconditional=use_uncond_loss,
         return_details=True,
@@ -166,15 +202,23 @@ def D_loss(real_image, fake_image, model_D, loss_fn,
         loss_d_comp["d_loss_real_mismatched_cond"] = loss_fn(
             real_details['mismatched_conditional'], d_fake_label
         )
-        # Preserve the original 1:1 positive/negative mass: matched real keeps
-        # weight 1 while generated-fake and mismatched-real share negative weight 1.
-        # Otherwise adding the matching supervision would also increase total D
-        # scale by 50%, confounding the intended change with a D/G balance change.
+        # Preserve the original 1:1 positive/negative mass throughout the ramp:
+        # matched real keeps weight 1 while generated-fake and mismatched-real
+        # share negative weight 1, split 1:1 once cond_gate reaches 1. At
+        # cond_gate == 1 this is exactly the original fixed 0.5/0.5 split;
+        # cond_gate < 1 shifts negative mass back onto d_loss_fake_cond alone
+        # (mismatched_weight -> 0), and cond_gate == 0 skips this block
+        # entirely (mismatched_mu is None), leaving d_loss_fake_cond at its
+        # full, unscaled weight -- otherwise adding the matching supervision
+        # would also change total D scale, confounding the intended change
+        # with a D/G balance change.
+        fake_cond_weight = 1.0 - 0.5 * cond_gate
+        mismatched_weight = 0.5 * cond_gate
         loss_d_comp["d_loss_fake_cond"] = (
-            0.5 * loss_d_comp["d_loss_fake_cond"]
+            fake_cond_weight * loss_d_comp["d_loss_fake_cond"]
         )
         loss_d_comp["d_loss_real_mismatched_cond"] = (
-            0.5 * loss_d_comp["d_loss_real_mismatched_cond"]
+            mismatched_weight * loss_d_comp["d_loss_real_mismatched_cond"]
         )
 
     # NOTE: This is a vanilla (Sigmoid + BCE) GAN with spectral normalization in the
@@ -189,9 +233,9 @@ def D_loss(real_image, fake_image, model_D, loss_fn,
             real_details['unconditional'], d_real_label
         )
 
-    if use_contrastive_loss:
-        loss_d_comp['d_loss_fake_cond_contrastive'] = gamma * contrastive_loss_D(fake_details['alignment'], txt_feature)
-        loss_d_comp['d_loss_real_cond_contrastive'] = gamma * contrastive_loss_D(real_details['alignment'], txt_feature)
+    if gated_contrastive:
+        loss_d_comp['d_loss_fake_cond_contrastive'] = cond_gate * gamma * contrastive_loss_D(fake_details['alignment'], txt_feature)
+        loss_d_comp['d_loss_real_cond_contrastive'] = cond_gate * gamma * contrastive_loss_D(real_details['alignment'], txt_feature)
 
     d_loss = gather_all(loss_d_comp)
     return d_loss
@@ -244,7 +288,10 @@ def G_loss(real_image, fake_image, model_D, loss_fn,
         )
 
     if use_contrastive_loss:
-        if min(fake_image.shape[-2:]) >= CLIPConfig.MIN_QUALITY_SIZE:
+        # `lam > 0` skips the CLIP forward/backward entirely instead of computing it
+        # only to zero it afterward -- with --lam 0 this sheds the CLIP memory/compute
+        # cost its help text implies. The resolution guard is unchanged.
+        if lam > 0 and min(fake_image.shape[-2:]) >= CLIPConfig.MIN_QUALITY_SIZE:
             loss_g_comp['g_loss_cond_contrastive'] = lam * contrastive_loss_G(fake_image, clip_model, txt_feature, device)
         loss_g_comp['d_loss_cond_contrastive'] = gamma * contrastive_loss_D(details['alignment'], txt_feature)
 

@@ -230,6 +230,57 @@ class RealTrainStepSmokeTest(unittest.TestCase):
         ))
 
 
+class ConditioningWarmupWiringTests(unittest.TestCase):
+    """train_step must thread --cond_warmup_epochs/--cond_ramp_epochs into D_loss's
+    cond_gate via criteria.loss.conditioning_gate(epoch, ...), not silently drop them.
+    """
+
+    def _cond_gate_seen_by_d_loss(self, epoch, cond_warmup_epochs, cond_ramp_epochs):
+        torch.manual_seed(0)
+        device = torch.device('cpu')
+        batch_size = 4
+
+        model_G = _build_tiny_generator(device)
+        model_D = _build_tiny_discriminator(device)
+        dataset = _TinyRealDataset(
+            length=batch_size, clip_emb_dim=_TINY_CLIP_EMB_DIM, img_size=_TINY_IMG_SIZE
+        )
+        train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        optim_g = torch.optim.Adam(model_G.parameters(), lr=1e-3)
+        optim_d = torch.optim.Adam(model_D.parameters(), lr=1e-3)
+
+        with mock.patch.object(trainer, 'D_loss', wraps=trainer.D_loss) as spy:
+            trainer.train_step(
+                train_loader=train_loader, noise_dim=_TINY_NOISE_DIM, model_G=model_G,
+                model_D_lst=[model_D], optim_g=optim_g, optim_d_lst=[optim_d],
+                loss_fn=torch.nn.BCELoss(), num_stage=1,
+                use_uncond_loss=False, use_contrastive_loss=False, use_mixed_loss=False,
+                clip_model=None, gamma=1.0, lam=1.0, report_interval=10,
+                device=device, epoch=epoch, writer=_StubWriter(),
+                cond_warmup_epochs=cond_warmup_epochs, cond_ramp_epochs=cond_ramp_epochs,
+            )
+        self.assertTrue(spy.called)
+        return spy.call_args.kwargs['cond_gate']
+
+    def test_cond_gate_is_zero_during_warmup_epoch(self):
+        cond_gate = self._cond_gate_seen_by_d_loss(
+            epoch=0, cond_warmup_epochs=3, cond_ramp_epochs=0
+        )
+        self.assertEqual(cond_gate, 0.0)
+
+    def test_cond_gate_is_one_once_warmup_ends(self):
+        cond_gate = self._cond_gate_seen_by_d_loss(
+            epoch=3, cond_warmup_epochs=3, cond_ramp_epochs=0
+        )
+        self.assertEqual(cond_gate, 1.0)
+
+    def test_default_cond_gate_is_always_one(self):
+        cond_gate = self._cond_gate_seen_by_d_loss(
+            epoch=0, cond_warmup_epochs=0, cond_ramp_epochs=0
+        )
+        self.assertEqual(cond_gate, 1.0)
+
+
 class RealGeneratorForwardTest(unittest.TestCase):
     def test_forward_produces_finite_correctly_shaped_stage_output(self):
         torch.manual_seed(0)

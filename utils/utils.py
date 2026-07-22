@@ -560,6 +560,10 @@ _TRAINING_DEFAULTS = {
     'batch_size': 1,
     'num_workers': 4,
     'save_freq': 1,
+    'gamma': 5.0,
+    'lam': 10.0,
+    'cond_warmup_epochs': 0,
+    'cond_ramp_epochs': 0,
 }
 
 

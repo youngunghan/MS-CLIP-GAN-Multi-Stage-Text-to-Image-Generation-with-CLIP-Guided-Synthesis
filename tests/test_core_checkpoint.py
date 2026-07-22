@@ -120,6 +120,16 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(metadata['training_config']['seed'], 17)
         self.assertTrue(metadata['training_config']['use_mismatched_condition'])
         self.assertEqual(metadata['training_config']['target_num_epochs'], 5)
+        # The conditioning-pressure schedule (--gamma/--lam/--cond_warmup_epochs/
+        # --cond_ramp_epochs) is recorded in training_config just like the other
+        # training options, so a run's schedule is recoverable from its checkpoint.
+        # self.args does not set these, so they fall back to the original
+        # hardcoded values (getattr default) -- proving the fallback also flows
+        # through into the saved provenance.
+        self.assertEqual(metadata['training_config']['gamma'], 5.0)
+        self.assertEqual(metadata['training_config']['lam'], 10.0)
+        self.assertEqual(metadata['training_config']['cond_warmup_epochs'], 0)
+        self.assertEqual(metadata['training_config']['cond_ramp_epochs'], 0)
         self.assertEqual(
             metadata['schedule_config'],
             {'phase_start_epoch': 0, 'phase_end_epoch': 5, 't_max': 5,
@@ -281,6 +291,14 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'save_freq'):
             load_checkpoint(
                 changed, g, [d], optim_g, [optim_d], self.temp_dir.name, 1,
+                scheduler_g=sched_g, scheduler_d_lst=[sched_d],
+            )
+
+        changed_warmup = types.SimpleNamespace(**vars(self.args))
+        changed_warmup.cond_warmup_epochs = 5
+        with self.assertRaisesRegex(ValueError, 'cond_warmup_epochs'):
+            load_checkpoint(
+                changed_warmup, g, [d], optim_g, [optim_d], self.temp_dir.name, 1,
                 scheduler_g=sched_g, scheduler_d_lst=[sched_d],
             )
 

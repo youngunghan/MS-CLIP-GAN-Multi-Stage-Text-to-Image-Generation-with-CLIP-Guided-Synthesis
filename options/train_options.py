@@ -33,6 +33,27 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--diffaugment_policy', type=str, default='color,translation,cutout',
                             help='DiffAugment policy (comma-separated subset of color,translation,cutout).')
 
+        # --- Text-conditioning pressure: tunable weights + staged introduction ---
+        parser.add_argument('--gamma', type=float, default=5.0,
+                            help='D-side text-image alignment InfoNCE weight (the two '
+                                 'contrastive_loss_D terms in D_loss). Default 5 reproduces '
+                                 'the original hardcoded weight.')
+        parser.add_argument('--lam', type=float, default=10.0,
+                            help='G-side CLIP contrastive weight, applied only at stages whose '
+                                 'resolution is >= CLIPConfig.MIN_QUALITY_SIZE. Default 10 '
+                                 'reproduces the original hardcoded weight.')
+        parser.add_argument('--cond_warmup_epochs', type=int, default=0,
+                            help='Number of initial epochs during which the D-side conditioning-'
+                                 'pressure terms that share the discriminator image trunk (the '
+                                 'gamma alignment InfoNCE terms and the mismatched-condition '
+                                 'negative) are held off, so D first learns real/fake separation '
+                                 'undisturbed. The plain real/fake BCE always trains from epoch 0. '
+                                 '0 (default) reproduces the original always-on behaviour.')
+        parser.add_argument('--cond_ramp_epochs', type=int, default=0,
+                            help='Number of epochs, after --cond_warmup_epochs ends, over which '
+                                 'the gated conditioning terms linearly ramp from 0 to full weight '
+                                 'instead of switching on abruptly. 0 (default) is a hard switch.')
+
         parser.add_argument('--is_train', type=str2bool, default=True, choices=([True, False]))
         return parser
 
@@ -58,6 +79,10 @@ class TrainOptions(BaseOptions):
         require(0.0 < opt.real_label_smooth <= 1.0,
                 '--real_label_smooth must be in (0, 1]')
         require(opt.d_update_every > 0, '--d_update_every must be > 0')
+        require(opt.gamma >= 0, '--gamma must be >= 0')
+        require(opt.lam >= 0, '--lam must be >= 0')
+        require(opt.cond_warmup_epochs >= 0, '--cond_warmup_epochs must be >= 0')
+        require(opt.cond_ramp_epochs >= 0, '--cond_ramp_epochs must be >= 0')
 
         resume_requested = opt.resume_checkpoint_path is not None or opt.resume_epoch != -1
         require(

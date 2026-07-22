@@ -78,7 +78,8 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
                clip_model, gamma, lam, report_interval, device, epoch, writer,
                g_ema=None, ema_decay=0.999, real_label_smooth=1.0, d_update_every=1,
                use_diffaugment=False, diffaugment_policy='color,translation,cutout',
-               use_mismatched_condition=True):
+               use_mismatched_condition=True,
+               cond_warmup_epochs=0, cond_ramp_epochs=0):
 
     model_G.train()
     for D in model_D_lst:
@@ -86,6 +87,13 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
 
     # DiffAugment policy passed to D_loss/G_loss (None = off); applied to discriminator inputs only.
     diffaug = diffaugment_policy if use_diffaugment else None
+
+    # Staged conditioning pressure (see criteria.loss.conditioning_gate): fixed for
+    # the whole epoch since it only depends on `epoch`. Only D_loss's gamma
+    # alignment terms and mismatched-condition negative are gated -- see D_loss's
+    # docstring/comments for why G_loss's terms are left untouched.
+    cond_gate = conditioning_gate(epoch, cond_warmup_epochs, cond_ramp_epochs)
+    writer.add_scalar('Parameters/cond_gate', cond_gate, epoch)
 
     d_loss_epoch = 0.0
     g_loss_epoch = 0.0
@@ -140,7 +148,8 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
                                   gamma,
                                   mu, txt_feature,
                                   d_fake_label, d_real_label, diffaug=diffaug,
-                                  use_mismatched_condition=use_mismatched_condition)
+                                  use_mismatched_condition=use_mismatched_condition,
+                                  cond_gate=cond_gate)
                 d_loss_i = d_scale * d_loss_i
                 d_loss_i.backward()
 
