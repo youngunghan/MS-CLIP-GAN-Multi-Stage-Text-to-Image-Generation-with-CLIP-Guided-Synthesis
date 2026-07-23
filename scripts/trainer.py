@@ -79,7 +79,7 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
                g_ema=None, ema_decay=0.999, real_label_smooth=1.0, d_update_every=1,
                use_diffaugment=False, diffaugment_policy='color,translation,cutout',
                use_mismatched_condition=True,
-               cond_warmup_epochs=0, cond_ramp_epochs=0):
+               cond_warmup_epochs=0, cond_ramp_epochs=0, kl_weight=1.0):
 
     model_G.train()
     for D in model_D_lst:
@@ -94,6 +94,7 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
     # docstring/comments for why G_loss's terms are left untouched.
     cond_gate = conditioning_gate(epoch, cond_warmup_epochs, cond_ramp_epochs)
     writer.add_scalar('Parameters/cond_gate', cond_gate, epoch)
+    writer.add_scalar('Parameters/kl_weight', kl_weight, epoch)
 
     d_loss_epoch = 0.0
     g_loss_epoch = 0.0
@@ -183,11 +184,15 @@ def train_step(train_loader, noise_dim, model_G, model_D_lst, optim_g, optim_d_l
                 g_loss = g_loss + g_loss_i
                 writer.add_scalar(f'G_loss/stage_{i}', g_loss_i.item(), epoch * total_iter + iter)
 
-            # Conditioning-augmentation KL regularizer
+            # Conditioning-augmentation KL regularizer (see --kl_weight). Computed and
+            # logged unconditionally so Loss/aug_loss stays comparable across runs;
+            # kl_weight scales its contribution to g_loss, with kl_weight=0 removing
+            # it entirely and the default kl_weight=1.0 reproducing the original
+            # always-on behaviour exactly.
             aug_loss = KL_divergence(mu, log_sigma)
             writer.add_scalar('Loss/aug_loss', aug_loss.item(), epoch * total_iter + iter)
 
-            g_loss = g_scale * (g_loss + aug_loss)
+            g_loss = g_scale * (g_loss + kl_weight * aug_loss)
             g_loss.backward()
         torch.nn.utils.clip_grad_norm_(model_G.parameters(), max_norm=1.0)
         optim_g.step()

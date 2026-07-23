@@ -89,7 +89,8 @@ if __name__ == '__main__':
     # 모델 초기화
     G = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
                  args.clip_embedding_dim, args.num_stage, device,
-                 conditioning_activation=args.conditioning_activation).to(device)
+                 conditioning_activation=args.conditioning_activation,
+                 deterministic_cond=args.deterministic_cond).to(device)
     G.apply(weight_init)
 
     # Multi-GPU 설정
@@ -132,7 +133,8 @@ if __name__ == '__main__':
     if args.use_ema:
         G_ema = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
                           args.clip_embedding_dim, args.num_stage, device,
-                          conditioning_activation=args.conditioning_activation).to(device)
+                          conditioning_activation=args.conditioning_activation,
+                          deterministic_cond=args.deterministic_cond).to(device)
         G_ema.load_state_dict(_unwrap(G).state_dict())
         for p in G_ema.parameters():
             p.requires_grad_(False)
@@ -181,7 +183,8 @@ if __name__ == '__main__':
             d_update_every=args.d_update_every,
             use_diffaugment=args.use_diffaugment, diffaugment_policy=args.diffaugment_policy,
             use_mismatched_condition=args.use_mismatched_condition,
-            cond_warmup_epochs=args.cond_warmup_epochs, cond_ramp_epochs=args.cond_ramp_epochs
+            cond_warmup_epochs=args.cond_warmup_epochs, cond_ramp_epochs=args.cond_ramp_epochs,
+            kl_weight=args.kl_weight
         )
 
         end_time = time.time()

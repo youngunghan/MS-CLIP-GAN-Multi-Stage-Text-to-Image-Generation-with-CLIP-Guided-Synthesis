@@ -16,6 +16,7 @@ LEGACY_MODEL_CONFIG: Dict[str, Any] = {
     "num_stage": 3,
     "conditioning_activation": "relu",
     "alignment_mode": "legacy_conditioned",
+    "deterministic_cond": False,
 }
 
 
@@ -63,6 +64,10 @@ def resolve_checkpoint_model_config(checkpoint_path, epoch) -> Tuple[dict, dict]
         )
     if config["alignment_mode"] not in {"image_only", "legacy_conditioned"}:
         raise ValueError(f"invalid checkpoint alignment_mode: {config['alignment_mode']!r}")
+    if not isinstance(config["deterministic_cond"], bool):
+        raise ValueError(
+            f"invalid checkpoint deterministic_cond: {config['deterministic_cond']!r}"
+        )
     return dict(metadata), config
 
 
@@ -75,6 +80,7 @@ def apply_checkpoint_model_config(args) -> Tuple[dict, dict]:
         f"Checkpoint config ({compatibility}): "
         f"G={config['g_in_chans']}ch/{config['num_stage']} stages, "
         f"noise={config['noise_dim']}, condition={config['condition_dim']}, "
-        f"conditioning={config['conditioning_activation']}"
+        f"conditioning={config['conditioning_activation']}, "
+        f"deterministic_cond={config['deterministic_cond']}"
     )
     return metadata, config

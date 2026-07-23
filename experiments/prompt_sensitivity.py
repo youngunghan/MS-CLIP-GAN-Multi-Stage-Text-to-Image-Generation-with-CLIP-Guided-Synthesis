@@ -186,6 +186,7 @@ def load_generator(checkpoint_dir: Path, epoch: int, device: str) -> Tuple[Gener
         config["g_in_chans"], config["g_out_chans"], config["noise_dim"],
         config["condition_dim"], config["clip_embedding_dim"], config["num_stage"],
         device, config["conditioning_activation"],
+        deterministic_cond=config["deterministic_cond"],
     ).to(device)
     load_args = types.SimpleNamespace(is_train=False, new_optim=False)
     load_checkpoint(
@@ -305,7 +306,8 @@ def print_report(
 ) -> None:
     print(
         f"checkpoint: {args.checkpoint_dir} epoch {args.epoch}   "
-        f"conditioning={config['conditioning_activation']}   alignment={config['alignment_mode']}",
+        f"conditioning={config['conditioning_activation']}   alignment={config['alignment_mode']}   "
+        f"deterministic_cond={config['deterministic_cond']}",
         flush=True,
     )
     print(f"captions: {args.num_captions}   seeds: {args.seeds}", flush=True)

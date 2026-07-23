@@ -53,6 +53,11 @@ class TrainOptions(BaseOptions):
                             help='Number of epochs, after --cond_warmup_epochs ends, over which '
                                  'the gated conditioning terms linearly ramp from 0 to full weight '
                                  'instead of switching on abruptly. 0 (default) is a hard switch.')
+        parser.add_argument('--kl_weight', type=float, default=1.0,
+                            help='Weight on the conditioning-augmentation KL regularizer '
+                                 '(criteria.loss.KL_divergence) added to the generator loss. '
+                                 'Default 1.0 reproduces the original hardcoded (always-on) '
+                                 'weight; 0 removes the KL term entirely.')
 
         parser.add_argument('--is_train', type=str2bool, default=True, choices=([True, False]))
         return parser
@@ -83,6 +88,7 @@ class TrainOptions(BaseOptions):
         require(opt.lam >= 0, '--lam must be >= 0')
         require(opt.cond_warmup_epochs >= 0, '--cond_warmup_epochs must be >= 0')
         require(opt.cond_ramp_epochs >= 0, '--cond_ramp_epochs must be >= 0')
+        require(opt.kl_weight >= 0, '--kl_weight must be >= 0')
 
         resume_requested = opt.resume_checkpoint_path is not None or opt.resume_epoch != -1
         require(

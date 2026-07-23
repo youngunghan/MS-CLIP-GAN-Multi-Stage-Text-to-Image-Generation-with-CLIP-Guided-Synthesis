@@ -21,6 +21,7 @@ from typing import List
 CHECKPOINT_FORMAT_VERSION = 2
 LEGACY_CONDITIONING_ACTIVATION = 'relu'
 LEGACY_ALIGNMENT_MODE = 'legacy_conditioned'
+LEGACY_DETERMINISTIC_COND = False
 
 
 _TRAINING_SOURCE_PATTERNS = (
@@ -426,6 +427,7 @@ def _infer_legacy_model_config(checkpoint_state):
         'num_stage': checkpoint_state.get('num_stage'),
         'conditioning_activation': LEGACY_CONDITIONING_ACTIVATION,
         'alignment_mode': LEGACY_ALIGNMENT_MODE,
+        'deterministic_cond': LEGACY_DETERMINISTIC_COND,
     }
 
     cond_weight = model_state.get('cond_aug.layer.0.weight')
@@ -489,6 +491,10 @@ def _canonical_checkpoint_metadata(checkpoint_state):
                 f'checkpoint format {format_version} is missing model_config fields: '
                 f'{", ".join(missing)}'
             )
+        # deterministic_cond post-dates format version 2; existing v2 checkpoints
+        # saved before it existed have no such key. Default it in rather than
+        # requiring it (which would need a format bump) or raising.
+        model_config.setdefault('deterministic_cond', LEGACY_DETERMINISTIC_COND)
         generator_weight_kind = checkpoint_state.get('generator_weight_kind', 'raw')
         training_config = checkpoint_state.get('training_config')
         training_provenance = checkpoint_state.get('training_provenance')
@@ -540,6 +546,7 @@ def _checkpoint_model_config(args, g, d_lst, num_stage):
         'num_stage': int(num_stage),
         'conditioning_activation': generator.conditioning_activation,
         'alignment_mode': alignment_mode,
+        'deterministic_cond': bool(generator.deterministic_cond),
     }
     if config['alignment_mode'] not in {'image_only', 'legacy_conditioned'}:
         raise ValueError(f"invalid alignment mode in checkpoint config: {alignment_mode!r}")
@@ -564,6 +571,7 @@ _TRAINING_DEFAULTS = {
     'lam': 10.0,
     'cond_warmup_epochs': 0,
     'cond_ramp_epochs': 0,
+    'kl_weight': 1.0,
 }
 
 
@@ -769,6 +777,7 @@ def _validate_training_provenance(args, metadata):
 def _set_checkpoint_compatibility_modes(g, d_lst, model_config, g_ema=None):
     conditioning_activation = model_config['conditioning_activation']
     alignment_mode = model_config['alignment_mode']
+    deterministic_cond = model_config.get('deterministic_cond', LEGACY_DETERMINISTIC_COND)
 
     for generator in (g, g_ema):
         if generator is not None:
@@ -776,6 +785,9 @@ def _set_checkpoint_compatibility_modes(g, d_lst, model_config, g_ema=None):
             if not hasattr(module, 'set_conditioning_activation'):
                 raise TypeError('generator does not support conditioning compatibility modes')
             module.set_conditioning_activation(conditioning_activation)
+            if not hasattr(module, 'set_deterministic_cond'):
+                raise TypeError('generator does not support deterministic-conditioning compatibility mode')
+            module.set_deterministic_cond(deterministic_cond)
 
     for discriminator in d_lst:
         if discriminator is not None:
@@ -1226,7 +1238,8 @@ def load_checkpoint(args, g: torch.nn.Module, d_lst: List[torch.nn.Module],
     print(
         f'Loaded models from {checkpoint_path} ({compatibility}; '
         f'conditioning={metadata["model_config"]["conditioning_activation"]}, '
-        f'alignment={metadata["model_config"]["alignment_mode"]})'
+        f'alignment={metadata["model_config"]["alignment_mode"]}, '
+        f'deterministic_cond={metadata["model_config"].get("deterministic_cond", LEGACY_DETERMINISTIC_COND)})'
     )
     return epoch, num_stage
 

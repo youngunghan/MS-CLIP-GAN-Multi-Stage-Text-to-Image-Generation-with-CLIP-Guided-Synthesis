@@ -36,7 +36,8 @@ def main():
 
     G = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
                   args.clip_embedding_dim, args.num_stage, device,
-                  args.conditioning_activation).to(device)
+                  args.conditioning_activation,
+                  deterministic_cond=args.deterministic_cond).to(device)
 
     # Inference only needs the generator; discriminator checkpoints are not required.
     load_checkpoint(args, G, [None for _ in range(args.num_stage)],

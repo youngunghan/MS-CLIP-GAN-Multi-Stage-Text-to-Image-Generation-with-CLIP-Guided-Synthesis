@@ -70,6 +70,13 @@ class BaseOptions():
             help='Alignment-head input mode. image_only prevents the text shortcut; '
                  'checkpoint metadata overrides this when loading.'
         )
+        parser.add_argument(
+            '--deterministic_cond', action='store_true',
+            help='Make conditioning augmentation deterministic: ConditioningAugmention '
+                 'returns condition = mu (no reparameterization noise). Fresh runs '
+                 'default to the original stochastic behaviour; checkpoint metadata '
+                 'overrides this when loading.'
+        )
 
         # Pipeline is fixed to CLIP ViT-B/32 (512-dim): preprocessing (preprocess_dataset.py)
         # HARDCODES ViT-B/32 when computing the stored embeddings, and --clip_embedding_dim is 512

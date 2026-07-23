@@ -1,11 +1,13 @@
 import math
 import unittest
+from unittest import mock
 
 import torch
 
 from config.config import CLIPConfig
 from criteria.loss import D_loss, G_loss, contrastive_loss_D, conditioning_gate
 from networks.discriminator import AlignCondDiscriminator, Discriminator
+from networks import generator as generator_module
 from networks.generator import ConditioningAugmention
 
 
@@ -26,6 +28,76 @@ class ConditioningAugmentationTests(unittest.TestCase):
         self.assertEqual(legacy_mu.item(), 0.0)
         self.assertEqual(legacy_log_sigma.item(), 0.0)
         self.assertEqual(set(linear.state_dict()), set(legacy.state_dict()))
+
+
+class DeterministicConditioningTests(unittest.TestCase):
+    """--deterministic_cond must make ConditioningAugmention.forward return
+    exactly mu (no reparameterization draw, no RNG dependence), while the
+    default stochastic mode keeps the original mu + exp(log_sigma) * eps
+    formula (see WHY in the task: an unconstrained KL term pins sigma to 1,
+    at which point that unit-variance eps drowns the caption signal in mu)."""
+
+    def test_deterministic_forward_returns_mu_exactly_and_skips_epsilon_draw(self):
+        module = ConditioningAugmention(
+            3, 2, torch.device('cpu'), activation='linear', deterministic=True
+        )
+        x = torch.randn(4, 3)
+
+        with mock.patch.object(generator_module.torch, 'randn_like') as randn_like:
+            condition, mu, log_sigma = module(x)
+        randn_like.assert_not_called()
+        torch.testing.assert_close(condition, mu, rtol=0.0, atol=0.0)
+        self.assertTrue(torch.isfinite(log_sigma).all())
+
+    def test_deterministic_forward_is_independent_of_rng_state(self):
+        module = ConditioningAugmention(
+            3, 2, torch.device('cpu'), activation='linear', deterministic=True
+        )
+        x = torch.randn(4, 3)
+
+        torch.manual_seed(0)
+        condition_a, mu_a, _ = module(x)
+        torch.manual_seed(12345)
+        condition_b, mu_b, _ = module(x)
+
+        torch.testing.assert_close(condition_a, mu_a, rtol=0.0, atol=0.0)
+        torch.testing.assert_close(condition_b, mu_b, rtol=0.0, atol=0.0)
+        torch.testing.assert_close(condition_a, condition_b, rtol=0.0, atol=0.0)
+
+    def test_stochastic_forward_matches_reparameterization_formula(self):
+        module = ConditioningAugmention(3, 2, torch.device('cpu'), activation='linear')
+        x = torch.randn(4, 3)
+        fixed_eps = torch.randn(4, 2)
+
+        with mock.patch.object(
+            generator_module.torch, 'randn_like', return_value=fixed_eps
+        ) as randn_like:
+            condition, mu, log_sigma = module(x)
+        randn_like.assert_called_once()
+        expected = mu + torch.exp(log_sigma) * fixed_eps
+        torch.testing.assert_close(condition, expected, rtol=0.0, atol=0.0)
+
+    def test_stochastic_forward_is_rng_dependent(self):
+        module = ConditioningAugmention(3, 2, torch.device('cpu'), activation='linear')
+        x = torch.randn(4, 3)
+
+        torch.manual_seed(0)
+        condition_a, mu_a, _ = module(x)
+        torch.manual_seed(12345)
+        condition_b, _, _ = module(x)
+
+        self.assertFalse(torch.equal(condition_a, mu_a))
+        self.assertFalse(torch.equal(condition_a, condition_b))
+
+    def test_set_deterministic_toggles_forward_behaviour_in_place(self):
+        module = ConditioningAugmention(3, 2, torch.device('cpu'), activation='linear')
+        x = torch.randn(4, 3)
+
+        self.assertFalse(module.deterministic)
+        module.set_deterministic(True)
+        self.assertTrue(module.deterministic)
+        condition, mu, _ = module(x)
+        torch.testing.assert_close(condition, mu, rtol=0.0, atol=0.0)
 
 
 class AlignmentTests(unittest.TestCase):

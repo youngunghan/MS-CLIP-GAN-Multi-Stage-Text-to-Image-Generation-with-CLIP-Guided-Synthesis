@@ -68,6 +68,7 @@ LEGACY_MODEL_CONFIG: Dict[str, Any] = {
     "num_stage": 3,
     "conditioning_activation": "relu",
     "alignment_mode": "legacy_conditioned",
+    "deterministic_cond": False,
 }
 MODEL_CONFIG_KEYS = frozenset(LEGACY_MODEL_CONFIG)
 
@@ -301,6 +302,13 @@ def make_generator(config: Mapping[str, Any], device: str) -> Generator:
     elif config["conditioning_activation"] != LEGACY_MODEL_CONFIG["conditioning_activation"]:
         raise ValueError(
             f"checkpoint requires conditioning_activation={config['conditioning_activation']!r}, "
+            "but this Generator implementation does not support that architecture option"
+        )
+    if "deterministic_cond" in signature.parameters:
+        kwargs["deterministic_cond"] = config["deterministic_cond"]
+    elif config["deterministic_cond"] != LEGACY_MODEL_CONFIG["deterministic_cond"]:
+        raise ValueError(
+            f"checkpoint requires deterministic_cond={config['deterministic_cond']!r}, "
             "but this Generator implementation does not support that architecture option"
         )
     return Generator(**kwargs).to(device)
