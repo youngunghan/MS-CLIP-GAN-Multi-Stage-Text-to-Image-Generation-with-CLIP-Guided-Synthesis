@@ -89,7 +89,8 @@ if __name__ == '__main__':
     # 모델 초기화
     G = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
                  args.clip_embedding_dim, args.num_stage, device,
-                 conditioning_activation=args.conditioning_activation).to(device)
+                 conditioning_activation=args.conditioning_activation,
+                 deterministic_cond=args.deterministic_cond).to(device)
     G.apply(weight_init)
 
     # Multi-GPU 설정
@@ -132,7 +133,8 @@ if __name__ == '__main__':
     if args.use_ema:
         G_ema = Generator(args.g_in_chans, args.g_out_chans, args.noise_dim, args.condition_dim,
                           args.clip_embedding_dim, args.num_stage, device,
-                          conditioning_activation=args.conditioning_activation).to(device)
+                          conditioning_activation=args.conditioning_activation,
+                          deterministic_cond=args.deterministic_cond).to(device)
         G_ema.load_state_dict(_unwrap(G).state_dict())
         for p in G_ema.parameters():
             p.requires_grad_(False)
@@ -174,13 +176,15 @@ if __name__ == '__main__':
         d_loss, g_loss, txt_feature = train_step(
             train_loader, args.noise_dim, G, D_lst, optim_g, optim_d_lst,
             loss_fn, args.num_stage, args.use_uncond_loss, args.use_contrastive_loss,
-            args.use_mixed_loss, clip_model, gamma=5, lam=10,
+            args.use_mixed_loss, clip_model, gamma=args.gamma, lam=args.lam,
             report_interval=args.report_interval, device=device,
             epoch=epoch, writer=writer,
             g_ema=G_ema, ema_decay=args.ema_decay, real_label_smooth=args.real_label_smooth,
             d_update_every=args.d_update_every,
             use_diffaugment=args.use_diffaugment, diffaugment_policy=args.diffaugment_policy,
-            use_mismatched_condition=args.use_mismatched_condition
+            use_mismatched_condition=args.use_mismatched_condition,
+            cond_warmup_epochs=args.cond_warmup_epochs, cond_ramp_epochs=args.cond_ramp_epochs,
+            kl_weight=args.kl_weight
         )
 
         end_time = time.time()

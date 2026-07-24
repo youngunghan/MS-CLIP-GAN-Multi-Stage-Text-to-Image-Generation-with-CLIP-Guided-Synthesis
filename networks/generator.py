@@ -14,11 +14,19 @@ class ConditioningAugmention(nn.Module):
 
     Both modes keep exactly the same parameter names and shapes: the activation is
     applied functionally rather than stored in ``self.layer``.
+
+    ``deterministic`` (see ``--deterministic_cond``) drops the reparameterization
+    noise entirely: ``condition`` becomes exactly ``mu``, with no RNG consumption.
+    This exists because an unconstrained KL term (see ``--kl_weight``) drives
+    ``sigma`` toward its analytic fixed point of 1 elementwise, at which point the
+    unit-variance ``epsilon`` draw injected every step drowns the caption-dependent
+    signal already carried by ``mu`` (measured SNR ~0.001-0.005). Defaults to
+    ``False``, reproducing the original stochastic forward pass exactly.
     """
 
     VALID_ACTIVATIONS = frozenset({'linear', 'relu'})
 
-    def __init__(self, c_txt_dim, cond_dim, device, activation='linear'):
+    def __init__(self, c_txt_dim, cond_dim, device, activation='linear', deterministic=False):
         super(ConditioningAugmention, self).__init__()
         self.device = device
         self.c_txt_dim = c_txt_dim
@@ -26,6 +34,7 @@ class ConditioningAugmention(nn.Module):
         # Keep the Linear at layer.0 so historical state_dicts load strictly.
         self.layer = LBR(self.c_txt_dim, self.c_hat_txt_dim * 2, norm=False, act=False)
         self.set_activation(activation)
+        self.set_deterministic(deterministic)
 
     def set_activation(self, activation):
         if activation not in self.VALID_ACTIVATIONS:
@@ -34,6 +43,9 @@ class ConditioningAugmention(nn.Module):
                 f"got {activation!r}"
             )
         self.activation = activation
+
+    def set_deterministic(self, deterministic):
+        self.deterministic = bool(deterministic)
 
     def forward(self, x):
         '''
@@ -49,9 +61,13 @@ class ConditioningAugmention(nn.Module):
             features = torch.relu(features)
         mu, log_sigma = features[:, :self.c_hat_txt_dim], features[:, self.c_hat_txt_dim:]
 
-        # Reparameterization trick
-        epsilon = torch.randn_like(mu).to(mu.device) # z를 mu와 같은 디바이스에 생성
-        condition = mu + torch.exp(log_sigma) * epsilon # c_hat_txt
+        if self.deterministic:
+            # No reparameterization draw: condition is exactly mu, independent of RNG state.
+            condition = mu
+        else:
+            # Reparameterization trick
+            epsilon = torch.randn_like(mu).to(mu.device) # z를 mu와 같은 디바이스에 생성
+            condition = mu + torch.exp(log_sigma) * epsilon # c_hat_txt
 
         return condition, mu, log_sigma
 
@@ -253,7 +269,7 @@ class Generator_type_2(nn.Module):
 
 class Generator(nn.Module):
     def __init__(self, in_chans, out_chans, noise_dim, cond_dim, clip_emb_dim, num_stage,
-                 device, conditioning_activation='linear'):
+                 device, conditioning_activation='linear', deterministic_cond=False):
         super(Generator, self).__init__()
         self.device = device
 
@@ -269,6 +285,7 @@ class Generator(nn.Module):
         self.num_stage = num_stage
         self.num_res_layer_type2 = 2  # NOTE: you can change this
         self.conditioning_activation = conditioning_activation
+        self.deterministic_cond = deterministic_cond
 
         # return layers
         self.cond_aug = self._conditioning_augmentation()
@@ -279,13 +296,19 @@ class Generator(nn.Module):
         # (StackGAN) https://openaccess.thecvf.com/content_ICCV_2017/papers/Zhang_StackGAN_Text_to_ICCV_2017_paper.pdf
         return ConditioningAugmention(
             self.c_txt_dim, self.cond_dim, self.device,
-            activation=self.conditioning_activation
+            activation=self.conditioning_activation,
+            deterministic=self.deterministic_cond,
         )
 
     def set_conditioning_activation(self, activation):
         """Switch compatibility semantics without changing checkpoint parameters."""
         self.cond_aug.set_activation(activation)
         self.conditioning_activation = activation
+
+    def set_deterministic_cond(self, deterministic_cond):
+        """Switch conditioning-augmentation determinism without changing checkpoint parameters."""
+        self.cond_aug.set_deterministic(deterministic_cond)
+        self.deterministic_cond = bool(deterministic_cond)
 
     def _stage_generator(self, i):
         '''

@@ -25,8 +25,14 @@ def build_inception_score(device, splits=10):
 
 
 @torch.no_grad()
-def calculate_clip_score(images, text_features, clip_model):
-    """CLIP cosine similarity between generated images (in [-1, 1]) and text features."""
+def calculate_clip_score(images, text_features, clip_model, return_features=False):
+    """CLIP cosine similarity between generated images (in [-1, 1]) and text features.
+
+    ``return_features=True`` additionally returns the L2-normalized per-image CLIP
+    features (shape ``[B, D]``), so a caller that also needs image-feature-derived
+    statistics (e.g. a diversity metric) can reuse this single encode_image() pass
+    instead of running CLIP over the same images a second time.
+    """
     processed_images = CLIPConfig.preprocess_image(images)
 
     image_features = clip_model.encode_image(processed_images).float()
@@ -34,4 +40,6 @@ def calculate_clip_score(images, text_features, clip_model):
     text_features = normalize(text_features.float(), dim=-1)
 
     similarity = torch.sum(image_features * text_features, dim=-1).mean()
+    if return_features:
+        return similarity.item(), image_features
     return similarity.item()

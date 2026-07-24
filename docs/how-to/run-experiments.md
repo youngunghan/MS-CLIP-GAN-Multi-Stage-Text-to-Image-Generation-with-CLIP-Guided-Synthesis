@@ -2,7 +2,7 @@
 
 > **범위:** 소규모 HF 서브셋을 준비하고 학습→checkpoint별 FID/IS→plot까지 실행하는 절차. 역사적 수치 해석은 [experiments/RESULTS.md](../../experiments/RESULTS.md), 정식 학습·평가·추론은 [how-to/train-eval-infer.md](train-eval-infer.md).
 > **대상:** correctness audit 이후 정량 실험을 재현·확장하는 개발자.
-> **상태:** 구현 반영 — 기준일 2026-07-10.
+> **상태:** 구현 반영 — 기준일 2026-07-23.
 
 현재 pipeline은 `environment.yml`의 `msclipgan` 환경 하나를 사용한다. shell 파일의
 실행 bit에 의존하지 않도록 항상 `bash`로 실행하고, Python 진입점을 직접 부를 때는
@@ -107,6 +107,35 @@ bash experiments/run_diffaug.sh diffaug_probe_current sub 50 5
 run과 동일한 architecture semantics가 아니므로 결과를 한 curve에 놓을 때 설정 차이를
 명시한다.
 
+conditioning 붕괴 진단 결과([explanation/correctness-and-fixes.md §2.4](../explanation/correctness-and-fixes.md#24-2026-07-23-conditioning-붕괴-진단복구))를
+반영해 prompt-swap sensitivity를 회복시키는 recipe는 다음과 같다.
+
+```bash
+PYTHONPATH=. python scripts/train.py \
+  --name cond_recovery \
+  --data_path ./data/trainset_sub.zip \
+  --batch_size 4 \
+  --learning_rate 2e-4 \
+  --num_epochs 30 \
+  --save_freq 5 \
+  --use_uncond_loss --use_contrastive_loss --use_mixed_loss \
+  --use_diffaugment \
+  --conditioning_activation linear \
+  --alignment_mode legacy_conditioned \
+  --no_mismatched_condition \
+  --gamma 1 --lam 2 \
+  --kl_weight 0 --deterministic_cond \
+  --gpu_ids 0
+```
+
+`--kl_weight 0`과 `--deterministic_cond`가 근본 원인 두 가지를 끄고, `--gamma 1 --lam 2`는
+conditioning 관련 항들이 D 학습을 압도하지 않도록 낮춘 값이다. conditioning 효과는
+epoch 10~30 부근에서 정점을 찍은 뒤 모든 run에서 감소하므로 **early stopping이
+필요**하다 — `--num_epochs`를 크게 잡고 이 구간의 checkpoint들을
+[§7 Prompt-sensitivity 측정](#7-prompt-sensitivity-측정-1차-conditioning-지표)으로 직접 비교한다.
+회복된 응답은 여전히 한 자릿수~낮은 두 자릿수 `/255` 수준이고 FID는 350~410대에
+머문다는 한계는 [explanation/correctness-and-fixes.md §2.4](../explanation/correctness-and-fixes.md#24-2026-07-23-conditioning-붕괴-진단복구)에 정리돼 있다.
+
 ## 5. 개별 checkpoint 평가
 
 ```bash
@@ -131,8 +160,14 @@ PYTHONPATH=. python experiments/eval_curve.py \
 
 | 파일 | 내용 |
 |---|---|
-| `eval.json` | 기존 schema를 유지한 epoch별 `fid`, `is_mean`, `is_std` |
-| `eval.json.provenance.json` | eval seed·caption policy·sample 수·dataset/checkpoint/result JSON SHA-256·model/training/schedule config·학습 provenance·Git/runtime/hardware 버전 |
+| `eval.json` | epoch별 `fid`, `is_mean`, `is_std`에 더해 `clip_score`, `clip_diversity`(생성 이미지 CLIP feature의 평균 pairwise cosine distance) |
+| `eval.json.provenance.json` | eval seed·caption policy·sample 수·dataset/checkpoint/result JSON SHA-256·model/training/schedule config·학습 provenance·Git/runtime/hardware·CLIP 모델/가중치 fingerprint·fake sample 수 |
+
+> ⚠️ **오염 경고:** 모든 학습 run은 `--use_contrastive_loss`로 G를 CLIP similarity에
+> 대해 직접 학습시킨다. 따라서 `clip_score`/`clip_diversity`는 학습 목적함수와 부분적으로
+> 겹치는 지표이며, conditioning이 실제로 작동한다는 독립 증거로 인용하지 않는다. 어떤
+> loss도 최적화하지 않는 1차 conditioning 지표는 [§7 Prompt-sensitivity 측정](#7-prompt-sensitivity-측정-1차-conditioning-지표)의
+> `experiments/prompt_sensitivity.py`다.
 
 ## 6. 결과 해석
 
@@ -152,6 +187,44 @@ PYTHONPATH=. python experiments/eval_curve.py \
 - 역사적 결과는 [experiments/RESULTS.md](../../experiments/RESULTS.md)가 정본이다.
   커밋된 과거 JSON은 evaluation seed가 미기록이고, 그 뒤 loop-level seed 버전도
   checkpoint 순서에 의존하므로 현재 evaluator와 exact match를 보장하지 않는다.
+
+## 7. Prompt-sensitivity 측정 (1차 conditioning 지표)
+
+`clip_score`/`clip_diversity`는 학습 loss와 겹쳐 오염된 지표이므로(§5 경고 참고),
+conditioning이 실제로 caption에 반응하는지 확인하는 1차 지표는
+[experiments/prompt_sensitivity.py](../../experiments/prompt_sensitivity.py)다. noise
+`z`와 conditioning-augmentation epsilon을 고정한 채 caption만 바꿔 256px 출력의 평균
+절대 pixel 이동(0~255 스케일)과 CLIP matched-vs-shuffled gap을 측정한다 — 어떤 loss도
+이 pixel-sensitivity 수치를 최적화하지 않으므로 gaming이 불가능하다.
+
+```bash
+PYTHONPATH=. python experiments/prompt_sensitivity.py \
+  checkpoints/<run-name>/ckpt \
+  20 \
+  data/testset_sub.zip \
+  --num-captions 16 \
+  --seeds 5 \
+  --device cuda
+```
+
+| 인자/옵션 | 의미 |
+|---|---|
+| `checkpoint_dir` | `epoch_<E>_Gen.pt`를 담은 디렉터리(위치 인자) |
+| `epoch` | 측정할 checkpoint epoch(위치 인자) |
+| `dataset_zip` | `dataset.json.clip_txt_features`를 가진 전처리 zip(위치 인자) |
+| `--num-captions` | 서로 바꿔볼 caption 개수(기본 16, 최소 2) |
+| `--seeds` | 독립적인 `(z, CA-epsilon)` draw 반복 수(기본 3). 단일 seed는 std=0으로 오해를 주므로 피한다 |
+| `--seed` | base RNG seed(기본 42) |
+| `--device` | 기본은 CUDA 가용 시 `cuda`, 아니면 `cpu` |
+| `--output` | 결과를 JSON으로도 저장할 경로(선택) |
+
+참조 스케일(이미 측정, 매 실행마다 함께 출력): 실제 이미지-자기 caption CLIP 유사도
+0.2722, 셔플 caption과의 유사도 0.2025(usable range 0.0697); 붕괴된 모델의
+prompt-swap sensitivity ~2/255; 서로 다른 checkpoint가 같은 caption에서 보이는 차이
+~75.7/255. `--kl_weight 0 --deterministic_cond` recipe([§4 변형 실행](#4-변형-실행))를
+적용한 checkpoint는 이 sensitivity가 ~5~11/255로 회복된다([explanation/correctness-and-fixes.md §2.4](../explanation/correctness-and-fixes.md#24-2026-07-23-conditioning-붕괴-진단복구)).
+"% of range" 수치는 참조 range를 측정한 `data/testset_sub.zip`(510 caption)이 아닌 다른
+dataset에서는 `nan`으로 억제된다.
 
 ## 관련 문서
 

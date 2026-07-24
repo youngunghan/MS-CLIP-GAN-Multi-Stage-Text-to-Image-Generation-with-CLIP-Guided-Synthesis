@@ -2,7 +2,7 @@
 
 > **범위:** 코드 정확성 감사에서 확인·수정한 핵심 결함, legacy checkpoint 호환 계약, 결과를 인용하기 전 알아야 할 한계. 구조 설명은 [explanation/architecture.md](architecture.md).
 > **대상:** 개발자·실험 결과를 인용하는 사람.
-> **상태:** 구현·런타임 검증 반영 — 기준일 2026-07-10. 새 conditioning/alignment 기본값은 재학습 결과가 아직 없음.
+> **상태:** 구현·런타임 검증 반영 — 기준일 2026-07-23. conditioning 붕괴 진단·복구([§2.4](#24-2026-07-23-conditioning-붕괴-진단복구))까지 반영했으며, 다중 seed·held-out 통계 검증은 아직 없음.
 
 ## 1. 결론과 적용 범위
 
@@ -16,6 +16,12 @@ metadata가 없는 기존 checkpoint는 자동으로 legacy `relu` +
 기존 `experiments/results/**/eval.json`과 `models/best_sub25_ep20/`은 수정 전
 conditioning/alignment와 과거 evaluator로 만든 역사적 기록이다. 현재 기본값의 성능
 근거로 인용하지 않는다([experiments/RESULTS.md](../../experiments/RESULTS.md)).
+
+새 기본값(`linear`+`image_only`)을 켠 채로 실제 학습해 보면 conditioning은 여전히
+거의 응답하지 않았다. 2026-07-20~23 세 커밋은 그 증상을 드러낼 측정 도구를 먼저
+만들고, 명백해 보이는 knob이 red herring임을 확인한 뒤, 근본 원인을 찾아 고쳤다 —
+자세한 진단·수정·측정된 한계는 [§2.4](#24-2026-07-23-conditioning-붕괴-진단복구)와
+[§5.2 남은 제한](#52-남은-제한)에 정리한다.
 
 ## 2. 적용된 수정
 
@@ -69,6 +75,29 @@ metadata 없는 weight에 legacy mode를 선택해 과거 의미도 보존한다
 | ✅ | 전처리 무결성 | 필수 embedding 차원·unique/missing stem 검증, 단 한 sample 실패도 전체 abort, 기존 ZIP 보존, seed·고정 ZIP metadata·preprocess config 기록 | [preprocessing/preprocess_dataset.py](../../preprocessing/preprocess_dataset.py) `convert_dataset()` |
 | ✅ | CLI 계약 | RGB/단일 D 출력/단계 수/양수 범위와 loss·batch 조합을 parse 직후 검증; `--help`에 기본값·설명 노출 | [options/base_options.py](../../options/base_options.py) `BaseOptions.validate()`·[options/train_options.py](../../options/train_options.py) `TrainOptions.validate()` |
 
+### 2.4 2026-07-23 conditioning 붕괴 진단·복구
+
+| 상태 | 영역 | 확인된 문제 | 현재 계약 | 위치 |
+|---|---|---|---|---|
+| ✅ (2026-07-20) | 평가 가시성 | FID/IS는 caption을 무시해 conditioning 완전 붕괴가 드러나지 않았다 — caption을 바꿔도 256px 출력이 ~2/255만 움직였고, 서로 다른 checkpoint는 같은 caption에서 75.7/255 차이가 났다 | `eval_curve.py`가 매 epoch `clip_score`/`clip_diversity`를 추가로 기록(FID/IS와 같은 forward pass 재사용, 추가 forward 없음). 신규 `experiments/prompt_sensitivity.py`가 noise `z`와 CA epsilon을 고정하고 caption만 바꿔 pixel sensitivity를 직접 측정 | [experiments/eval_curve.py](../../experiments/eval_curve.py), [experiments/prompt_sensitivity.py](../../experiments/prompt_sensitivity.py) |
+| ✅ (2026-07-22) | 명백해 보인 knob은 red herring | `--gamma`/`--lam`/warm-up 스케줄을 조정해도 conditioning 자체는 계속 ~0으로 죽어 있었다 — 실제로 움직인 것은 2차 증상인 FID 발산/붕괴뿐이었다. controlled 비교에서 conditioning 항(linear+image_only+mismatched)을 켜면 FID가 epoch 10/20/30에서 325.78→367.30→358.96로 발산하고(legacy는 281.98→266.76→249.44로 하강) CLIP diversity가 0.0111로 붕괴했다. 원인은 D-trunk를 공유하는 gamma alignment InfoNCE 항과 mismatched-condition negative가 D의 real/fake 분리 학습을 방해하는 것이었다 | `--gamma`(기본 5.0)·`--lam`(기본 10.0)·`--cond_warmup_epochs`(기본 0)·`--cond_ramp_epochs`(기본 0)로 이 항들의 크기와 도입 시점을 조절 가능. 기본값은 기존 하드코딩 동작을 그대로 재현 | [criteria/loss.py](../../criteria/loss.py), [scripts/trainer.py](../../scripts/trainer.py) |
+| ✅ (2026-07-23) | 근본 원인 (측정됨, 두 요인 결합) | (1) conditioning-augmentation KL 정규화 항의 gradient가 CLIP-reward gradient의 7~50배라 `mu`의 caption-종속 변이를 붕괴시키고 `sigma=exp(log_sigma)`를 이론적 최적값 1.0에 고정한다. (2) `sigma`가 1로 고정된 채 `c_hat = mu + sigma·ε` reparameterization이 분산 1짜리 노이즈를 주입하는데, caption-종속 신호는 차원당 표준편차 0.001~0.005 수준이라 SNR이 ~0.001에 불과해 생성기가 conditioning을 우회하도록 학습된다 | `--kl_weight`(기본 1.0, `0`이면 KL 항 완전 제거)와 `--deterministic_cond`(기본 off, 켜면 `c_hat=mu`로 epsilon 없이 사용)로 두 원인을 모두 끌 수 있다. `--deterministic_cond`는 forward pass를 바꾸므로 v2 `model_config`에 저장되어 eval/infer/`eval_curve.py`/`prompt_sensitivity.py`가 재적용한다; metadata 없는 checkpoint는 `False`(기존 확률적 동작)로 해석 | [networks/generator.py](../../networks/generator.py) `ConditioningAugmention`, [scripts/trainer.py](../../scripts/trainer.py) |
+
+이 두 flag를 함께 켜면(`--kl_weight 0 --deterministic_cond`) prompt-swap sensitivity가
+~0.1/255에서 ~5~11/255로 회복된다. 검증에 쓴 전체 recipe와 재현 명령은
+[how-to/run-experiments.md §4 변형 실행](../how-to/run-experiments.md#4-변형-실행)에 있다.
+
+효과는 뚜렷하지만 작다. 회복된 응답은 여전히 한 자릿수~낮은 두 자릿수 /255
+수준이고(서로 다른 checkpoint 간 75.7/255 규모와 비교), FID는 350~410대에 머문다.
+conditioning 강도는 최근 실험에서 데이터양보다 batch size에 더 민감하게
+반응했다(같은 데이터에서 batch 16이 batch 4 대비 prompt 응답을 대략 2배로 늘림).
+학습 데이터를 3.6배(source `ixw/celebahq-caption-10k`의 표본 상한인 약 9,000장까지)
+늘려도 FID 품질 상한은 오르지 않았다. 남은 지렛대는 데이터가 아니라 구조 쪽으로
+보인다 — StackGAN 계열 conditioning augmentation 대신 상시 활성 cross-attention text
+경로, 그리고 판별기의 alignment head가 real/fake head와 image trunk를 공유하지 않는
+구조 등이다. conditioning 효과는 epoch 10~30 부근에서 정점을 찍은 뒤 매 run
+감소하므로, recipe를 그대로 재현할 때도 early stopping이 필요하다.
+
 ## 3. Checkpoint 호환·재학습 계약
 
 | checkpoint | load 시 동작 | 용도 | 주의 |
@@ -99,8 +128,11 @@ metadata 없는 weight에 legacy mode를 선택해 과거 의미도 보존한다
 - **metric 해석:** FID는 표본 수와 feature extractor에 의존한다. ignite 1000-d
   logits FID와 torchmetrics pool3 2048-d FID는 변환할 수 없다. 표본 수·seed·feature
   space를 함께 보고한다.
-- **CLIP score:** 학습에도 같은 CLIP을 쓰므로 생성-text alignment의 보조 지표이지
-  절대 품질이나 외부 일반화 지표가 아니다.
+- **CLIP score/diversity:** 모든 학습 run이 `--use_contrastive_loss`로 같은 CLIP에
+  대해 G를 직접 학습시키므로, `eval_curve.py`가 기록하는 `clip_score`/`clip_diversity`는
+  학습 목적함수와 부분적으로 겹치는 보조 지표다 — conditioning이 실제로 작동한다는
+  독립 증거로 읽지 않는다. 어떤 loss도 최적화하지 않는 오염되지 않은 지표는
+  `experiments/prompt_sensitivity.py`의 prompt-swap pixel sensitivity다([§2.4](#24-2026-07-23-conditioning-붕괴-진단복구)).
 - **방법론 위치:** 이 구현은 StackGAN++/LAFITE/AttnGAN 등에서 가져온 구성의 연구용
   조합이다. 독창성·고품질·외부 benchmark 우월성은 현재 실험으로 입증되지 않았다.
 
@@ -126,8 +158,11 @@ checkpoint 누락 계약을 검사한다. 이는 full training의 품질 검증�
 
 ### 5.2 남은 제한
 
-- 🟠 **재학습 미실행:** linear CA + image-only alignment의 장기 학습 품질과 FID는
-  아직 측정하지 않았다. legacy 결과가 수정 성공의 성능 증거는 아니다.
+- 🟠 **장기 학습 품질 미확정:** linear CA + image-only alignment 조합의 conditioning
+  붕괴는 진단·복구했고 그 과정에서 짧은 통제 실험(epoch 10/20/30, FID/CLIP diversity)을
+  실제로 돌렸지만([§2.4](#24-2026-07-23-conditioning-붕괴-진단복구)), 장기 학습 품질은
+  여전히 legacy 결과와 나란히 놓을 만큼 검증되지 않았다. legacy 결과가 수정 성공의
+  성능 증거는 아니다.
 - 🟠 **통계 검증 미실행:** 여러 training/eval seed, 분리 validation, held-out test,
   confidence interval이 없다.
 - 🟠 **환경 재현성:** Python/PyTorch/TorchVision/핵심 metric과 CLIP revision은
@@ -142,6 +177,15 @@ checkpoint 누락 계약을 검사한다. 이는 full training의 품질 검증�
   `download_provenance.json`과 filename pickle을 함께 보존한다.
 - 🟢 **보조 손실:** uncond/contrastive/mixed/DiffAugment는 선택 설정이다. 데이터와
   batch에 따라 안정성이 달라지므로 설정·seed를 결과와 함께 기록한다.
+- 🟠 **conditioning 회복 효과가 제한적:** `--kl_weight 0 --deterministic_cond` recipe로
+  prompt-swap sensitivity를 살려도 응답은 한 자릿수~낮은 두 자릿수 /255 수준([§2.4](#24-2026-07-23-conditioning-붕괴-진단복구))이며,
+  epoch 10~30 부근에서 정점을 찍은 뒤 모든 run이 감소해 early stopping이 필요하다.
+- 🟠 **FID·데이터 확장 한계:** 위 recipe로도 FID는 350~410대에 머물고, 학습 데이터를
+  3.6배(~9,000장, `ixw/celebahq-caption-10k` 표본 상한)로 늘려도 FID 품질 상한이
+  오르지 않았다. conditioning 강도는 데이터양보다 batch size에 더 민감했다(batch 16이
+  batch 4 대비 응답 약 2배). clip_score/clip_diversity는 `--use_contrastive_loss`가
+  항상 켜져 있어 학습 목적함수 자체와 겹치므로 conditioning이 실제로 작동하는지의
+  독립 증거로 쓰지 않는다 — 오염되지 않은 지표는 `prompt_sensitivity.py`다.
 
 ## 관련 문서
 

@@ -2,7 +2,7 @@
 
 > **범위:** CLI 옵션(base/train/test), 의존성(environment.yml 기준), 기본 하이퍼파라미터. 옵션 정의는 [options/](../../options/).
 > **대상:** 개발자.
-> **상태:** 구현 반영 — 기준일 2026-07-10.
+> **상태:** 구현 반영 — 기준일 2026-07-23.
 
 ## 1. 공통 옵션 (BaseOptions)
 
@@ -30,6 +30,7 @@
 | `--num_stage` | int | 3 | 단계 수(해상도 64·128·256) |
 | `--conditioning_activation` | choice | `linear` | CA projection: 새 학습은 `linear`, legacy 호환은 `relu`. checkpoint metadata가 load 시 의미를 결정 |
 | `--alignment_mode` | choice | `image_only` | 정렬 head: 새 학습은 `image_only`, legacy 호환은 `legacy_conditioned`. checkpoint metadata가 load 시 의미를 결정 |
+| `--deterministic_cond` | flag | off | conditioning augmentation의 reparameterization epsilon 샘플링을 건너뛰고 `c_hat = mu`를 그대로 사용. KL이 `sigma`를 1.0 근처로 미는 상태에서 unit-variance 노이즈가 caption-종속 신호를 압도하는 것을 막기 위함([explanation/correctness-and-fixes.md §2.4](../explanation/correctness-and-fixes.md#24-2026-07-23-conditioning-붕괴-진단복구)). forward pass를 바꾸므로 v2 `model_config`에 저장되어 eval/infer/`eval_curve.py`/`prompt_sensitivity.py`가 재적용; metadata 없는 checkpoint는 `False`(기존 확률적 동작)로 해석 |
 | `--clip_model` | str | `ViT-B/32` | CLIP 모델. **`ViT-B/32` 고정**(choices 제한). 전처리([preprocess_dataset.py](../../preprocessing/preprocess_dataset.py) `convert_dataset`)가 ViT-B/32를 **하드코딩**하고 `clip_embedding_dim=512`라 다른 모델은 차원 불일치. 변경은 CLI 옵션만으로 불가 — 전처리 코드 수정 + 재전처리 + `clip_embedding_dim` 동기화(=코드 변경)가 필요 |
 
 > 🟢 `preprocess_dataset.py`의 `--max-failure-frac`(기본 0.0, 즉 sample 실패 0건까지만 허용)은
@@ -39,7 +40,7 @@
 > 🟢 `--gpu_ids`는 실제 디바이스 인덱스로 쓰인다(과거의 죽은 재매핑 분기 제거). 디바이스 선택은 스크립트가 담당하고 `BaseOptions`는 `set_device`를 호출하지 않는다.
 > 🟢 `--noise_dim` 변경 시에도 SSA 블록 차원이 어긋나지 않는다(생성기가 `cond_dim`을 명시적으로 전달, [networks/generator.py](../../networks/generator.py) `Generator_type_1`).
 >
-> 🟠 metadata 없는 기존 checkpoint는 CLI 기본값을 그대로 쓰지 않고 `conditioning_activation=relu`, `alignment_mode=legacy_conditioned`로 자동 전환한다. 새 기본값의 효과는 fresh training이 필요하다([§3 Checkpoint 호환·재학습 계약](../explanation/correctness-and-fixes.md#3-checkpoint-호환재학습-계약)).
+> 🟠 metadata 없는 기존 checkpoint는 CLI 기본값을 그대로 쓰지 않고 `conditioning_activation=relu`, `alignment_mode=legacy_conditioned`, `deterministic_cond=False`로 자동 전환한다. 새 기본값의 효과는 fresh training이 필요하다([§3 Checkpoint 호환·재학습 계약](../explanation/correctness-and-fixes.md#3-checkpoint-호환재학습-계약)).
 
 ## 2. 학습 옵션 (TrainOptions)
 
@@ -63,6 +64,11 @@
 | `--d_update_every` | int | 1 | G 스텝 N번마다 D를 1번 업데이트(N>1이면 D를 약화, 즉 n_critic<1) |
 | `--use_diffaugment` | flag | off | 판별기 입력의 real/fake 양쪽에 DiffAugment(미분 가능 증강) 적용 |
 | `--diffaugment_policy` | str | `color,translation,cutout` | DiffAugment 정책(콤마 구분, `color`/`translation`/`cutout`의 부분집합) |
+| `--gamma` | float | 5.0 | D-side text-image alignment InfoNCE 가중치(`D_loss`의 두 `contrastive_loss_D` 항). 이전 하드코딩 값(5)을 그대로 재현 |
+| `--lam` | float | 10.0 | G-side CLIP contrastive 가중치. 출력 변이 `CLIPConfig.MIN_QUALITY_SIZE`(256px) 이상인 단계에만 적용. 이전 하드코딩 값(10)을 그대로 재현하며, 출력의 고주파 "grain" 정도를 좌우 |
+| `--kl_weight` | float | 1.0 | conditioning-augmentation KL 정규화 항(`criteria.loss.KL_divergence`)이 G loss에 더해지는 가중치. `0`이면 KL 항을 완전히 제거. checkpoint `training_config`에 기록 |
+| `--cond_warmup_epochs` | int | 0 | 처음 N epoch 동안 판별기 image trunk를 공유하는 조건화 항(gamma alignment InfoNCE 항과 mismatched-condition negative)을 꺼서 D가 real/fake 분리를 먼저 학습하게 함. 순수 real/fake BCE는 항상 학습 |
+| `--cond_ramp_epochs` | int | 0 | `--cond_warmup_epochs` 이후 N epoch에 걸쳐 그 항들을 0에서 full weight로 선형 ramp-in(0이면 hard switch) |
 | `--is_train` | bool | `true` | 내부 mode 표식. `TrainOptions`에서는 `true`만 허용 |
 
 > `--new_optim`이 없으면 v2 exact resume 계약이다. `--num_epochs`는 저장된 scheduler
@@ -100,6 +106,7 @@
 | 학습 범위 | `batch_size`, `num_epochs`, `learning_rate`, `save_freq`, `d_update_every` > 0 |
 | contrastive | `batch_size>=2` 및 dataset sample>=2 |
 | EMA/label | `0<=ema_decay<1`, `0<real_label_smooth<=1` |
+| conditioning 가중치/스케줄 | `gamma>=0`, `lam>=0`, `kl_weight>=0`, `cond_warmup_epochs>=0`, `cond_ramp_epochs>=0` |
 | resume | path/epoch를 함께 지정, `0<=resume_epoch<num_epochs-1`; `--new_optim`은 resume과 함께만 사용 |
 | DiffAugment | 사용 시 policy는 `color`, `translation`, `cutout`의 비어 있지 않은 콤마 목록 |
 | 평가 | `load_epoch>=0`, `batch_size>0`, `print_freq>0`, `max_batches=-1` 또는 양수 |

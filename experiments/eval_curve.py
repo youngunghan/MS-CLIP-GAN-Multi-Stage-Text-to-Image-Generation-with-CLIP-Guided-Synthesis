@@ -41,6 +41,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import clip
 import torch
 import torchvision
 import torchvision.transforms as T
@@ -48,12 +49,16 @@ from PIL import Image
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.inception import InceptionScore
 
+from config.config import CLIPConfig
+from criteria.metric import calculate_clip_score
 from networks.generator import Generator
 from utils.utils import load_checkpoint, normalize, peek_checkpoint_metadata, seed_fix
 
 
 DEFAULT_SEED = 42
 DEFAULT_BATCH_SIZE = 32
+# Pipeline is fixed to CLIP ViT-B/32 (512-dim); see options/base_options.py --clip_model.
+CLIP_MODEL_NAME = "ViT-B/32"
 LEGACY_MODEL_CONFIG: Dict[str, Any] = {
     "g_in_chans": 1024,
     "g_out_chans": 3,
@@ -63,6 +68,7 @@ LEGACY_MODEL_CONFIG: Dict[str, Any] = {
     "num_stage": 3,
     "conditioning_activation": "relu",
     "alignment_mode": "legacy_conditioned",
+    "deterministic_cond": False,
 }
 MODEL_CONFIG_KEYS = frozenset(LEGACY_MODEL_CONFIG)
 
@@ -298,11 +304,35 @@ def make_generator(config: Mapping[str, Any], device: str) -> Generator:
             f"checkpoint requires conditioning_activation={config['conditioning_activation']!r}, "
             "but this Generator implementation does not support that architecture option"
         )
+    if "deterministic_cond" in signature.parameters:
+        kwargs["deterministic_cond"] = config["deterministic_cond"]
+    elif config["deterministic_cond"] != LEGACY_MODEL_CONFIG["deterministic_cond"]:
+        raise ValueError(
+            f"checkpoint requires deterministic_cond={config['deterministic_cond']!r}, "
+            "but this Generator implementation does not support that architecture option"
+        )
     return Generator(**kwargs).to(device)
 
 
 def _uint8_images(images: torch.Tensor) -> torch.Tensor:
     return (images.clamp(0, 1) * 255).to(torch.uint8)
+
+
+def _mean_pairwise_cosine_distance(features: torch.Tensor) -> float:
+    """Mean pairwise cosine distance (1 - cosine similarity) over unit-norm features.
+
+    Computed in O(N*D) instead of the naive O(N^2*D) via
+    sum_{i != j} f_i . f_j = ||sum_i f_i||^2 - sum_i (f_i . f_i), and the second
+    term is N for L2-normalized rows.
+    """
+    n = features.shape[0]
+    if n < 2:
+        return float("nan")
+    total = features.sum(dim=0)
+    sum_all_pairs = torch.dot(total, total)
+    sum_offdiag = sum_all_pairs - n
+    mean_similarity = sum_offdiag / (n * (n - 1))
+    return float(1.0 - mean_similarity)
 
 
 def evaluate_checkpoint(
@@ -313,6 +343,7 @@ def evaluate_checkpoint(
     config: Mapping[str, Any],
     seed: int,
     device: str,
+    clip_model,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> Dict[str, float]:
     if captions.shape[1] != config["clip_embedding_dim"]:
@@ -342,6 +373,8 @@ def evaluate_checkpoint(
 
         fid = FrechetInceptionDistance(normalize=False).to(device)
         inception = InceptionScore(normalize=False).to(device)
+        clip_score_sum = 0.0
+        clip_feature_chunks: List[torch.Tensor] = []
         with torch.no_grad():
             for start in range(0, len(real), batch_size):
                 fid.update(_uint8_images(real[start : start + batch_size].to(device)), real=True)
@@ -351,16 +384,36 @@ def evaluate_checkpoint(
                     caption_batch.size(0), int(config["noise_dim"]), device=device
                 )
                 images, _, _ = generator(caption_batch, noise)
-                fake_uint8 = _uint8_images((images[-1].clamp(-1, 1) + 1) / 2)
+                fake = images[-1]
+                fake_uint8 = _uint8_images((fake.clamp(-1, 1) + 1) / 2)
                 fid.update(fake_uint8, real=False)
                 inception.update(fake_uint8)
 
+                # calculate_clip_score() already runs CLIP's image encoder once per
+                # batch; reuse those features for clip_diversity instead of a second
+                # encode_image() pass over the same fakes.
+                batch_clip_score, batch_features = calculate_clip_score(
+                    fake, caption_batch, clip_model, return_features=True
+                )
+                clip_score_sum += batch_clip_score * caption_batch.size(0)
+                clip_feature_chunks.append(batch_features.detach())
+
         fid_value = float(fid.compute())
         is_mean, is_std = (float(value) for value in inception.compute())
-        values = (fid_value, is_mean, is_std)
+        clip_score_value = clip_score_sum / len(captions)
+        clip_diversity_value = _mean_pairwise_cosine_distance(
+            torch.cat(clip_feature_chunks, dim=0)
+        )
+        values = (fid_value, is_mean, is_std, clip_score_value, clip_diversity_value)
         if not all(math.isfinite(value) for value in values):
             raise RuntimeError(f"epoch {epoch} produced non-finite metrics: {values}")
-        return {"fid": fid_value, "is_mean": is_mean, "is_std": is_std}
+        return {
+            "fid": fid_value,
+            "is_mean": is_mean,
+            "is_std": is_std,
+            "clip_score": clip_score_value,
+            "clip_diversity": clip_diversity_value,
+        }
     finally:
         del generator, fid, inception
         gc.collect()
@@ -375,12 +428,34 @@ def _package_versions() -> Dict[str, Optional[str]]:
         "torchvision": torchvision.__version__,
         "cuda_runtime": torch.version.cuda,
     }
-    for distribution, key in (("torchmetrics", "torchmetrics"), ("Pillow", "pillow"), ("numpy", "numpy")):
+    for distribution, key in (
+        ("torchmetrics", "torchmetrics"),
+        ("Pillow", "pillow"),
+        ("numpy", "numpy"),
+        ("clip", "clip"),
+    ):
         try:
             versions[key] = importlib.metadata.version(distribution)
         except importlib.metadata.PackageNotFoundError:
             versions[key] = None
     return versions
+
+
+def _clip_weights_expected_sha256(model_name: str) -> Optional[str]:
+    """Return the canonical weights checksum for ``model_name``, with no download.
+
+    ``clip.load()`` verifies the locally cached checkpoint against this exact
+    checksum on every call (it is the hash segment embedded in the model's
+    download URL, e.g. .../<sha256>/ViT-B-32.pt) -- so surfacing it here is a
+    free string lookup, not a fresh file hash, and it still distinguishes two
+    runs that silently ended up with different downloaded weights for the same
+    model name.
+    """
+    try:
+        url = clip.clip._MODELS[model_name]
+    except (AttributeError, KeyError):
+        return None
+    return url.split("/")[-2]
 
 
 def _git_state(repo_root: Path) -> Tuple[Optional[str], Optional[bool]]:
@@ -471,6 +546,17 @@ def build_provenance(
             "evaluated_epochs": [epoch for epoch, _ in checkpoints],
             "fid_feature_dimension": 2048,
             "inception_input": "uint8_rgb",
+            # One fake image is generated per test caption (see evaluate_checkpoint's
+            # per-caption loop); recorded explicitly so a future comparison across
+            # runs cannot silently mix different N_fake values.
+            "fake_sample_count": sample_count,
+            "clip_model": CLIP_MODEL_NAME,
+            # Package version alone does not distinguish two downloads of the same
+            # named model; this is the checksum clip.load() itself enforces against
+            # the locally cached weights (see _clip_weights_expected_sha256), so two
+            # runs that silently ended up with different weights for "ViT-B/32" no
+            # longer look provenance-compatible.
+            "clip_weights_expected_sha256": _clip_weights_expected_sha256(CLIP_MODEL_NAME),
         },
     }
 
@@ -489,6 +575,11 @@ def run(args: argparse.Namespace) -> Tuple[Path, Path]:
         flush=True,
     )
 
+    # Load CLIP once for the whole run (not per checkpoint): it is a fixed feature
+    # extractor, unlike FID/IS which must be rebuilt per checkpoint to reset state.
+    clip_model, _ = CLIPConfig.load_clip(CLIP_MODEL_NAME, device)
+    clip_model.eval()
+
     results: Dict[str, Dict[str, float]] = {}
     details: Dict[str, Dict[str, Any]] = {}
     for epoch, _checkpoint_path in checkpoints:
@@ -501,6 +592,7 @@ def run(args: argparse.Namespace) -> Tuple[Path, Path]:
             config,
             args.seed,
             device,
+            clip_model,
         )
         results[str(epoch)] = metric
         details[str(epoch)] = {
@@ -517,7 +609,8 @@ def run(args: argparse.Namespace) -> Tuple[Path, Path]:
         }
         print(
             f"epoch {epoch:3d}:  FID(2048) = {metric['fid']:8.2f}   "
-            f"IS = {metric['is_mean']:.3f} ± {metric['is_std']:.3f}",
+            f"IS = {metric['is_mean']:.3f} ± {metric['is_std']:.3f}   "
+            f"CLIP = {metric['clip_score']:.4f}   CLIP-div = {metric['clip_diversity']:.4f}",
             flush=True,
         )
 

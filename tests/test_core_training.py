@@ -1,3 +1,4 @@
+import inspect
 import types
 import unittest
 from unittest import mock
@@ -228,6 +229,133 @@ class RealTrainStepSmokeTest(unittest.TestCase):
             not torch.equal(before, after.detach())
             for before, after in zip(d_params_before, model_D.parameters())
         ))
+
+
+class ConditioningWarmupWiringTests(unittest.TestCase):
+    """train_step must thread --cond_warmup_epochs/--cond_ramp_epochs into D_loss's
+    cond_gate via criteria.loss.conditioning_gate(epoch, ...), not silently drop them.
+    """
+
+    def _cond_gate_seen_by_d_loss(self, epoch, cond_warmup_epochs, cond_ramp_epochs):
+        torch.manual_seed(0)
+        device = torch.device('cpu')
+        batch_size = 4
+
+        model_G = _build_tiny_generator(device)
+        model_D = _build_tiny_discriminator(device)
+        dataset = _TinyRealDataset(
+            length=batch_size, clip_emb_dim=_TINY_CLIP_EMB_DIM, img_size=_TINY_IMG_SIZE
+        )
+        train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        optim_g = torch.optim.Adam(model_G.parameters(), lr=1e-3)
+        optim_d = torch.optim.Adam(model_D.parameters(), lr=1e-3)
+
+        with mock.patch.object(trainer, 'D_loss', wraps=trainer.D_loss) as spy:
+            trainer.train_step(
+                train_loader=train_loader, noise_dim=_TINY_NOISE_DIM, model_G=model_G,
+                model_D_lst=[model_D], optim_g=optim_g, optim_d_lst=[optim_d],
+                loss_fn=torch.nn.BCELoss(), num_stage=1,
+                use_uncond_loss=False, use_contrastive_loss=False, use_mixed_loss=False,
+                clip_model=None, gamma=1.0, lam=1.0, report_interval=10,
+                device=device, epoch=epoch, writer=_StubWriter(),
+                cond_warmup_epochs=cond_warmup_epochs, cond_ramp_epochs=cond_ramp_epochs,
+            )
+        self.assertTrue(spy.called)
+        return spy.call_args.kwargs['cond_gate']
+
+    def test_cond_gate_is_zero_during_warmup_epoch(self):
+        cond_gate = self._cond_gate_seen_by_d_loss(
+            epoch=0, cond_warmup_epochs=3, cond_ramp_epochs=0
+        )
+        self.assertEqual(cond_gate, 0.0)
+
+    def test_cond_gate_is_one_once_warmup_ends(self):
+        cond_gate = self._cond_gate_seen_by_d_loss(
+            epoch=3, cond_warmup_epochs=3, cond_ramp_epochs=0
+        )
+        self.assertEqual(cond_gate, 1.0)
+
+    def test_default_cond_gate_is_always_one(self):
+        cond_gate = self._cond_gate_seen_by_d_loss(
+            epoch=0, cond_warmup_epochs=0, cond_ramp_epochs=0
+        )
+        self.assertEqual(cond_gate, 1.0)
+
+
+class KLWeightWiringTests(unittest.TestCase):
+    """--kl_weight must scale the conditioning-augmentation KL regularizer
+    (criteria.loss.KL_divergence) that trainer.train_step adds on top of
+    G_loss, with kl_weight=0 removing its contribution to g_loss entirely
+    and the default kl_weight=1.0 reproducing the original always-on
+    behaviour bit-for-bit."""
+
+    def _g_total(self, kl_weight, mock_kl_value):
+        """Run one train_step with criteria.loss.KL_divergence stubbed to a known
+        constant, and return the logged Loss/G_total. Stubbing isolates the
+        kl_weight * aug_loss composition from the real KL value (which itself
+        depends on the model's randomly-initialized cond_aug layer)."""
+        torch.manual_seed(0)
+        device = torch.device('cpu')
+        batch_size = 4
+
+        model_G = _build_tiny_generator(device)
+        model_D = _build_tiny_discriminator(device)
+        dataset = _TinyRealDataset(
+            length=batch_size, clip_emb_dim=_TINY_CLIP_EMB_DIM, img_size=_TINY_IMG_SIZE
+        )
+        train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        optim_g = torch.optim.Adam(model_G.parameters(), lr=1e-3)
+        optim_d = torch.optim.Adam(model_D.parameters(), lr=1e-3)
+
+        recorded = {}
+
+        class _RecordingWriter(_StubWriter):
+            def add_scalar(self, tag, value, step):
+                if tag == 'Loss/G_total':
+                    recorded['g_total'] = value
+
+        kwargs = dict(
+            train_loader=train_loader, noise_dim=_TINY_NOISE_DIM, model_G=model_G,
+            model_D_lst=[model_D], optim_g=optim_g, optim_d_lst=[optim_d],
+            loss_fn=torch.nn.BCELoss(), num_stage=1,
+            use_uncond_loss=False, use_contrastive_loss=False, use_mixed_loss=False,
+            clip_model=None, gamma=1.0, lam=1.0, report_interval=10,
+            device=device, epoch=0, writer=_RecordingWriter(),
+        )
+        if kl_weight is not None:
+            kwargs['kl_weight'] = kl_weight
+
+        with mock.patch.object(
+            trainer, 'KL_divergence', return_value=torch.tensor(mock_kl_value)
+        ):
+            trainer.train_step(**kwargs)
+        return recorded['g_total']
+
+    def test_kl_weight_default_is_one(self):
+        self.assertEqual(
+            inspect.signature(trainer.train_step).parameters['kl_weight'].default, 1.0
+        )
+
+    def test_default_kl_weight_reproduces_original_always_on_composition(self):
+        """Not passing --kl_weight (the default) must add the KL term at full
+        weight, exactly like the original hardcoded `g_loss + aug_loss`."""
+        g_total_default = self._g_total(kl_weight=None, mock_kl_value=5.0)
+        g_total_explicit_one = self._g_total(kl_weight=1.0, mock_kl_value=5.0)
+        self.assertEqual(g_total_default, g_total_explicit_one)
+
+    def test_kl_weight_zero_removes_kl_contribution(self):
+        g_total_one = self._g_total(kl_weight=1.0, mock_kl_value=5.0)
+        g_total_zero = self._g_total(kl_weight=0.0, mock_kl_value=5.0)
+        # g_scale is hardcoded to 1.0 in trainer.train_step, so the difference
+        # between kl_weight=1.0 and kl_weight=0.0 is exactly the mocked KL value.
+        self.assertAlmostEqual(g_total_one - g_total_zero, 5.0, places=5)
+
+    def test_kl_weight_scales_the_contribution_linearly(self):
+        g_total_zero = self._g_total(kl_weight=0.0, mock_kl_value=2.0)
+        g_total_half = self._g_total(kl_weight=0.5, mock_kl_value=2.0)
+        g_total_one = self._g_total(kl_weight=1.0, mock_kl_value=2.0)
+        self.assertAlmostEqual(g_total_half - g_total_zero, 1.0, places=5)
+        self.assertAlmostEqual(g_total_one - g_total_zero, 2.0, places=5)
 
 
 class RealGeneratorForwardTest(unittest.TestCase):

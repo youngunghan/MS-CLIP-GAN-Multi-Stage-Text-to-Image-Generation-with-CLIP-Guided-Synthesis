@@ -19,7 +19,7 @@ from utils.utils import (
 
 
 class _TinyGenerator(torch.nn.Module):
-    def __init__(self, conditioning_activation='linear'):
+    def __init__(self, conditioning_activation='linear', deterministic_cond=False):
         super().__init__()
         self.layer = torch.nn.Linear(2, 2)
         self.in_chans = 32
@@ -29,9 +29,13 @@ class _TinyGenerator(torch.nn.Module):
         self.c_txt_dim = 8
         self.num_stage = 1
         self.conditioning_activation = conditioning_activation
+        self.deterministic_cond = deterministic_cond
 
     def set_conditioning_activation(self, activation):
         self.conditioning_activation = activation
+
+    def set_deterministic_cond(self, deterministic_cond):
+        self.deterministic_cond = deterministic_cond
 
 
 class _TinyDiscriminator(torch.nn.Module):
@@ -79,8 +83,9 @@ class CheckpointTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _training_objects(conditioning='linear', alignment='image_only', horizon=5):
-        generator = _TinyGenerator(conditioning)
+    def _training_objects(conditioning='linear', alignment='image_only', horizon=5,
+                          deterministic_cond=False):
+        generator = _TinyGenerator(conditioning, deterministic_cond=deterministic_cond)
         discriminator = _TinyDiscriminator(alignment)
         optim_g = torch.optim.Adam(generator.parameters(), lr=1e-3)
         optim_d = torch.optim.Adam(discriminator.parameters(), lr=1e-3)
@@ -120,6 +125,16 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(metadata['training_config']['seed'], 17)
         self.assertTrue(metadata['training_config']['use_mismatched_condition'])
         self.assertEqual(metadata['training_config']['target_num_epochs'], 5)
+        # The conditioning-pressure schedule (--gamma/--lam/--cond_warmup_epochs/
+        # --cond_ramp_epochs) is recorded in training_config just like the other
+        # training options, so a run's schedule is recoverable from its checkpoint.
+        # self.args does not set these, so they fall back to the original
+        # hardcoded values (getattr default) -- proving the fallback also flows
+        # through into the saved provenance.
+        self.assertEqual(metadata['training_config']['gamma'], 5.0)
+        self.assertEqual(metadata['training_config']['lam'], 10.0)
+        self.assertEqual(metadata['training_config']['cond_warmup_epochs'], 0)
+        self.assertEqual(metadata['training_config']['cond_ramp_epochs'], 0)
         self.assertEqual(
             metadata['schedule_config'],
             {'phase_start_epoch': 0, 'phase_end_epoch': 5, 't_max': 5,
@@ -154,6 +169,83 @@ class CheckpointTests(unittest.TestCase):
             torch.testing.assert_close(actual, expected)
         for actual, expected in zip(d.parameters(), saved_d.parameters()):
             torch.testing.assert_close(actual, expected)
+
+    def test_deterministic_cond_round_trips_through_save_and_load(self):
+        """A checkpoint saved with --deterministic_cond must record it in
+        model_config, and resuming/loading into a fresh generator must
+        re-apply it via set_deterministic_cond (mirroring conditioning_activation)."""
+        g, d, optim_g, optim_d, sched_g, sched_d = self._training_objects(
+            deterministic_cond=True
+        )
+        self._advance_schedulers(optim_g, optim_d, sched_g, sched_d, steps=2)
+        save_checkpoint(
+            self.args, g, [d], optim_g, [optim_d], epoch=1, num_stage=1,
+            scheduler_g=sched_g, scheduler_d_lst=[sched_d],
+        )
+        metadata = peek_checkpoint_metadata(self.temp_dir.name, 1)
+        self.assertIs(metadata['model_config']['deterministic_cond'], True)
+
+        target_g, target_d, target_og, target_od, target_sg, target_sd = (
+            self._training_objects()
+        )
+        self.assertFalse(target_g.deterministic_cond)
+        load_checkpoint(
+            self.args, target_g, [target_d], target_og, [target_od],
+            self.temp_dir.name, 1, scheduler_g=target_sg, scheduler_d_lst=[target_sd],
+        )
+        self.assertIs(target_g.deterministic_cond, True)
+
+    def test_v2_checkpoint_missing_deterministic_cond_key_resolves_false(self):
+        """A v2 checkpoint saved before --deterministic_cond existed has no such
+        key in its model_config. peek_checkpoint_metadata must default it to
+        False (no format bump required) rather than raising."""
+        g, d, optim_g, optim_d, sched_g, sched_d = self._training_objects()
+        self._advance_schedulers(optim_g, optim_d, sched_g, sched_d, steps=2)
+        save_checkpoint(
+            self.args, g, [d], optim_g, [optim_d], epoch=1, num_stage=1,
+            scheduler_g=sched_g, scheduler_d_lst=[sched_d],
+        )
+        gen_path = os.path.join(self.temp_dir.name, 'epoch_1_Gen.pt')
+        state = torch.load(gen_path, map_location='cpu', weights_only=True)
+        del state['model_config']['deterministic_cond']
+        torch.save(state, gen_path)
+
+        metadata = peek_checkpoint_metadata(self.temp_dir.name, 1)
+        self.assertIs(metadata['model_config']['deterministic_cond'], False)
+
+        target_g, target_d, target_og, target_od, target_sg, target_sd = (
+            self._training_objects(deterministic_cond=True)
+        )
+        load_checkpoint(
+            self.args, target_g, [target_d], target_og, [target_od],
+            self.temp_dir.name, 1, scheduler_g=target_sg, scheduler_d_lst=[target_sd],
+        )
+        self.assertIs(target_g.deterministic_cond, False)
+
+    def test_legacy_metadata_less_checkpoint_resolves_deterministic_cond_false(self):
+        """A fully legacy checkpoint (no format_version at all) must also resolve
+        deterministic_cond to False, like its conditioning_activation/alignment_mode
+        legacy defaults."""
+        g, d, optim_g, optim_d, _, _ = self._training_objects()
+        torch.save(
+            {'model': g.state_dict(), 'optimizer': optim_g.state_dict(),
+             'scheduler': None, 'epoch': 2, 'num_stage': 1},
+            os.path.join(self.temp_dir.name, 'epoch_2_Gen.pt'),
+        )
+        torch.save(
+            {'model': d.state_dict(), 'optimizer': optim_d.state_dict(),
+             'scheduler': None, 'epoch': 2, 'num_stage': 1},
+            os.path.join(self.temp_dir.name, 'epoch_2_Dis_0.pt'),
+        )
+        metadata = peek_checkpoint_metadata(self.temp_dir.name, 2)
+        self.assertIs(metadata['model_config']['deterministic_cond'], False)
+
+        inference_args = types.SimpleNamespace(is_train=False, new_optim=False)
+        target_g = _TinyGenerator(deterministic_cond=True)
+        load_checkpoint(
+            inference_args, target_g, [d], None, [None], self.temp_dir.name, 2
+        )
+        self.assertIs(target_g.deterministic_cond, False)
 
     def test_legacy_checkpoint_automatically_selects_legacy_modes(self):
         g, d, optim_g, optim_d, _, _ = self._training_objects()
@@ -281,6 +373,14 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'save_freq'):
             load_checkpoint(
                 changed, g, [d], optim_g, [optim_d], self.temp_dir.name, 1,
+                scheduler_g=sched_g, scheduler_d_lst=[sched_d],
+            )
+
+        changed_warmup = types.SimpleNamespace(**vars(self.args))
+        changed_warmup.cond_warmup_epochs = 5
+        with self.assertRaisesRegex(ValueError, 'cond_warmup_epochs'):
+            load_checkpoint(
+                changed_warmup, g, [d], optim_g, [optim_d], self.temp_dir.name, 1,
                 scheduler_g=sched_g, scheduler_d_lst=[sched_d],
             )
 

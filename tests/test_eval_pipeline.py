@@ -7,8 +7,10 @@ import types
 import unittest
 from unittest import mock
 
+import math
 import torch
 
+from criteria.metric import calculate_clip_score
 from experiments import eval_curve, plot_compare
 from scripts import checkpoint_config
 from utils.utils import save_metrics_to_csv
@@ -28,6 +30,16 @@ class _Metric:
 class _InceptionMetric(_Metric):
     def compute(self):
         return torch.tensor(2.5), torch.tensor(0.25)
+
+
+class _ClipModel:
+    """Minimal stand-in for a loaded CLIP model: only encode_image() is exercised."""
+
+    def eval(self):
+        return self
+
+    def encode_image(self, images):
+        return torch.zeros(images.shape[0], 512)
 
 
 class _Generator:
@@ -84,11 +96,11 @@ class EvalCurveTests(unittest.TestCase):
             eval_curve.torch.cuda, "is_available", return_value=False
         ):
             eval_curve.evaluate_checkpoint(
-                Path("unused"), 10, real, captions, config, 123, "cpu"
+                Path("unused"), 10, real, captions, config, 123, "cpu", _ClipModel()
             )
             torch.rand(31)
             eval_curve.evaluate_checkpoint(
-                Path("unused"), 20, real, captions, config, 123, "cpu"
+                Path("unused"), 20, real, captions, config, 123, "cpu", _ClipModel()
             )
 
         self.assertEqual(events, ["load", ("seed", 123), "load", ("seed", 123)])
@@ -139,7 +151,13 @@ class EvalCurveTests(unittest.TestCase):
                 seed=11,
             )
             config = dict(eval_curve.LEGACY_MODEL_CONFIG)
-            metrics = {"fid": 4.0, "is_mean": 2.0, "is_std": 0.1}
+            metrics = {
+                "fid": 4.0,
+                "is_mean": 2.0,
+                "is_std": 0.1,
+                "clip_score": 0.25,
+                "clip_diversity": 0.5,
+            }
             provenance = {"schema_version": 1, "seed": 11}
             with mock.patch.object(
                 eval_curve, "existing_checkpoints", return_value=[(3, checkpoint)]
@@ -161,6 +179,8 @@ class EvalCurveTests(unittest.TestCase):
                 eval_curve, "build_provenance", return_value=provenance
             ), mock.patch.object(
                 eval_curve.torch.cuda, "is_available", return_value=False
+            ), mock.patch.object(
+                eval_curve.CLIPConfig, "load_clip", return_value=(_ClipModel(), None)
             ):
                 result_path, provenance_path = eval_curve.run(args)
 
@@ -384,6 +404,92 @@ class PlotComparisonContractTests(unittest.TestCase):
             result_path.write_text('{"20":{"fid":999.0}}\n', encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "hash does not match"):
                 plot_compare.load_provenance(result_path)
+
+
+class MeanPairwiseCosineDistanceTests(unittest.TestCase):
+    """Hand-computed references for eval_curve._mean_pairwise_cosine_distance.
+
+    Unlike the _ClipModel stub above (all-zero features -> the formula collapses
+    to a fixed value regardless of whether the pair-count divisor or the 1-cos
+    conversion is right), these pin down the closed form against inputs whose
+    correct answer can be checked by hand.
+    """
+
+    def test_three_mutually_orthogonal_unit_vectors_give_distance_one(self):
+        features = torch.eye(3)  # e1, e2, e3: every pairwise cosine similarity is 0
+        distance = eval_curve._mean_pairwise_cosine_distance(features)
+        self.assertAlmostEqual(distance, 1.0, places=6)
+
+    def test_two_identical_unit_vectors_give_distance_zero(self):
+        features = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+        distance = eval_curve._mean_pairwise_cosine_distance(features)
+        self.assertAlmostEqual(distance, 0.0, places=6)
+
+    def test_two_opposite_unit_vectors_give_distance_two(self):
+        features = torch.tensor([[1.0, 0.0], [-1.0, 0.0]])
+        distance = eval_curve._mean_pairwise_cosine_distance(features)
+        self.assertAlmostEqual(distance, 2.0, places=6)
+
+    def test_fewer_than_two_features_gives_nan(self):
+        self.assertTrue(math.isnan(eval_curve._mean_pairwise_cosine_distance(torch.zeros(1, 4))))
+        self.assertTrue(math.isnan(eval_curve._mean_pairwise_cosine_distance(torch.zeros(0, 4))))
+
+
+class _NonDegenerateClipModel:
+    """CLIP stand-in that returns distinct, non-zero, non-unit-norm image features.
+
+    Unlike the all-zero _ClipModel stub used elsewhere in this file, this lets a
+    test pin the exact output of calculate_clip_score's normalize + dot-product
+    math instead of a degenerate value every formula produces.
+    """
+
+    def __init__(self, raw_image_features: torch.Tensor):
+        self._raw_image_features = raw_image_features
+
+    def eval(self):
+        return self
+
+    def encode_image(self, images):
+        assert images.shape[0] == self._raw_image_features.shape[0]
+        return self._raw_image_features
+
+
+class CalculateClipScoreMathTests(unittest.TestCase):
+    def test_return_features_matches_hand_computed_cosine_and_is_unit_norm(self):
+        # Raw (pre-normalization) CLIP image features chosen so unit-norm is not
+        # already 1.0 -- this exercises the normalize() call, not just the dot
+        # product.
+        raw_image_features = torch.tensor([[3.0, 4.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+        # unit_image_features = [[0.6, 0.8, 0, 0], [0, 0, 1, 0]]
+        text_features = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+        images = torch.zeros(2, 3, 8, 8)
+
+        clip_model = _NonDegenerateClipModel(raw_image_features)
+        score, features = calculate_clip_score(
+            images, text_features, clip_model, return_features=True
+        )
+
+        # Hand-computed: row0 dot(unit_img0, text0) = 0.6*1 + 0.8*0 = 0.6
+        #                row1 dot(unit_img1, text1) = 0*0 + 0*1 + 1*0 + 0*0 = 0.0
+        # mean = (0.6 + 0.0) / 2 = 0.3
+        self.assertAlmostEqual(score, 0.3, places=6)
+
+        expected_features = torch.tensor([[0.6, 0.8, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+        self.assertTrue(torch.allclose(features, expected_features, atol=1e-6))
+        self.assertTrue(
+            torch.allclose(features.norm(dim=-1), torch.ones(2), atol=1e-6)
+        )
+
+    def test_return_features_false_returns_only_the_score(self):
+        raw_image_features = torch.tensor([[1.0, 0.0]])
+        text_features = torch.tensor([[1.0, 0.0]])
+        images = torch.zeros(1, 3, 8, 8)
+
+        clip_model = _NonDegenerateClipModel(raw_image_features)
+        result = calculate_clip_score(images, text_features, clip_model)
+
+        self.assertIsInstance(result, float)
+        self.assertAlmostEqual(result, 1.0, places=6)
 
 
 if __name__ == "__main__":

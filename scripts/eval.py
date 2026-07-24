@@ -120,7 +120,8 @@ def main():
     G = Generator(
         args.g_in_chans, args.g_out_chans, args.noise_dim,
         args.condition_dim, args.clip_embedding_dim,
-        args.num_stage, device, args.conditioning_activation
+        args.num_stage, device, args.conditioning_activation,
+        deterministic_cond=args.deterministic_cond,
     ).to(device)
 
     load_checkpoint(

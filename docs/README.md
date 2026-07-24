@@ -17,7 +17,7 @@ CLIP 텍스트 임베딩을 조건으로 64→128→256 해상도를 단계적�
 | [how-to/prepare-dataset.md](how-to/prepare-dataset.md) | MM-CelebA-HQ 분할 → CLIP 피처 추출 전처리 → `trainset.zip`/`testset.zip` |
 | [how-to/train-eval-infer.md](how-to/train-eval-infer.md) | fresh 학습·exact resume/기간 연장·평가(FID/IS/CLIP)·prompt 추론 |
 | [how-to/troubleshooting.md](how-to/troubleshooting.md) | 증상별 문제 해결(OOM·체크포인트 로드·CLIP·데이터 경로) |
-| [how-to/run-experiments.md](how-to/run-experiments.md) | 서브셋 데이터 provenance→학습→checkpoint별 결정적 FID/IS+provenance→plot; 역사적 결과는 `experiments/RESULTS.md` |
+| [how-to/run-experiments.md](how-to/run-experiments.md) | 서브셋 데이터 provenance→학습→checkpoint별 결정적 FID/IS/CLIP+provenance→plot; conditioning 복구 recipe·prompt-sensitivity 측정; 역사적 결과는 `experiments/RESULTS.md` |
 
 ### reference — 조회용 명세
 
@@ -31,8 +31,8 @@ CLIP 텍스트 임베딩을 조건으로 64→128→256 해상도를 단계적�
 
 | 문서 | 설명 |
 |---|---|
-| [explanation/architecture.md](explanation/architecture.md) | 다단계 G/D·linear/legacy CA·image-only 정렬·DiffAugment·손실/업데이트 흐름 |
-| [explanation/correctness-and-fixes.md](explanation/correctness-and-fixes.md) | ⭐ 정확성 감사 수정·checkpoint 호환·실행 검증·결과 인용 한계 |
+| [explanation/architecture.md](explanation/architecture.md) | 다단계 G/D·linear/legacy CA(deterministic 옵션 포함)·image-only 정렬·DiffAugment·손실/업데이트 흐름 |
+| [explanation/correctness-and-fixes.md](explanation/correctness-and-fixes.md) | ⭐ 정확성 감사 수정·checkpoint 호환·conditioning 붕괴 진단/복구·실행 검증·결과 인용 한계 |
 
 ## 읽기 순서
 

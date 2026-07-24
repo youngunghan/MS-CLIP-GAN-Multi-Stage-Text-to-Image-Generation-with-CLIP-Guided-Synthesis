@@ -58,6 +58,61 @@ class TrainOptionValidationTests(unittest.TestCase):
             '--d_out_chans must be 1',
         )
 
+    def test_conditioning_pressure_flags_default_to_original_hardcoded_values(self):
+        options = self._parse(['--gpu_ids', '-1', '--batch_size', '2'])
+        self.assertEqual(options.gamma, 5.0)
+        self.assertEqual(options.lam, 10.0)
+        self.assertEqual(options.cond_warmup_epochs, 0)
+        self.assertEqual(options.cond_ramp_epochs, 0)
+
+    def test_conditioning_pressure_flags_are_tunable(self):
+        options = self._parse([
+            '--gpu_ids', '-1', '--batch_size', '2',
+            '--gamma', '2.5', '--lam', '7', '--cond_warmup_epochs', '5',
+            '--cond_ramp_epochs', '3',
+        ])
+        self.assertEqual(options.gamma, 2.5)
+        self.assertEqual(options.lam, 7.0)
+        self.assertEqual(options.cond_warmup_epochs, 5)
+        self.assertEqual(options.cond_ramp_epochs, 3)
+
+    def test_negative_conditioning_pressure_values_are_rejected(self):
+        self._assert_parse_error(
+            ['--gpu_ids', '-1', '--gamma', '-1'], '--gamma must be >= 0'
+        )
+        self._assert_parse_error(
+            ['--gpu_ids', '-1', '--lam', '-1'], '--lam must be >= 0'
+        )
+        self._assert_parse_error(
+            ['--gpu_ids', '-1', '--cond_warmup_epochs', '-1'],
+            '--cond_warmup_epochs must be >= 0',
+        )
+        self._assert_parse_error(
+            ['--gpu_ids', '-1', '--cond_ramp_epochs', '-1'],
+            '--cond_ramp_epochs must be >= 0',
+        )
+
+    def test_kl_weight_defaults_to_one_and_is_tunable(self):
+        options = self._parse(['--gpu_ids', '-1', '--batch_size', '2'])
+        self.assertEqual(options.kl_weight, 1.0)
+
+        options = self._parse(['--gpu_ids', '-1', '--batch_size', '2', '--kl_weight', '0'])
+        self.assertEqual(options.kl_weight, 0.0)
+
+    def test_negative_kl_weight_is_rejected(self):
+        self._assert_parse_error(
+            ['--gpu_ids', '-1', '--kl_weight', '-1'], '--kl_weight must be >= 0'
+        )
+
+    def test_deterministic_cond_defaults_to_false_and_is_settable(self):
+        options = self._parse(['--gpu_ids', '-1', '--batch_size', '2'])
+        self.assertFalse(options.deterministic_cond)
+
+        options = self._parse([
+            '--gpu_ids', '-1', '--batch_size', '2', '--deterministic_cond',
+        ])
+        self.assertTrue(options.deterministic_cond)
+
     def test_seed_fix_reproducibly_seeds_python_caption_rng(self):
         seed_fix(73)
         first = [random.randint(0, 100000) for _ in range(5)]
