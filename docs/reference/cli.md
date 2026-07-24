@@ -2,7 +2,7 @@
 
 > **범위:** Python 진입점과 shell wrapper의 인자·출력·실패 계약. 옵션 의미와 기본값은 [reference/configuration.md](configuration.md).
 > **대상:** 개발자·실험 자동화 작성자.
-> **상태:** 구현 반영 — 기준일 2026-07-10.
+> **상태:** 구현 반영 — 기준일 2026-07-23.
 
 ## 1. 공통 실행 계약
 
@@ -24,7 +24,8 @@
 | [scripts/trainer.py](../../scripts/trainer.py) | `train_step()` | 내부 호출 | D/G 2-phase update |
 | [scripts/infer.py](../../scripts/infer.py) | `main()` | `--checkpoint_path`, `--load_epoch`, `--eval_data_path None`, `--prompt` | `result_<size>.png` |
 | [scripts/eval.py](../../scripts/eval.py) | `evaluate()`·`main()` | checkpoint epoch + eval zip + seed | console + provenance-aware `metrics.csv` + hash-prefixed sample images |
-| [experiments/eval_curve.py](../../experiments/eval_curve.py) | `main()` | `TEST_ZIP CKPT_DIR EPOCHS OUT [--seed N]` | result JSON + `<OUT>.provenance.json` |
+| [experiments/eval_curve.py](../../experiments/eval_curve.py) | `main()` | `TEST_ZIP CKPT_DIR EPOCHS OUT [--seed N]` | result JSON(`fid`/`is_mean`/`is_std`/`clip_score`/`clip_diversity`) + `<OUT>.provenance.json` |
+| [experiments/prompt_sensitivity.py](../../experiments/prompt_sensitivity.py) | `main()` | `CKPT_DIR EPOCH DATASET.zip [--num-captions N] [--seeds N] [--seed N] [--device DEV] [--output PATH]` | console 리포트(pixel sensitivity + CLIP matched/shuffled gap) + optional JSON |
 | [experiments/plot_curves.py](../../experiments/plot_curves.py) | module entry | `TRAIN_LOG EVAL_JSON OUT_DIR` | loss/FID/IS `curves.png` |
 | [experiments/plot_compare.py](../../experiments/plot_compare.py) | `main()` | `OUT LABEL=EVAL...`; `--require-comparable`, allowed difference keys, optional `--require-diffaugment-pair POLICY` | neutral FID overlay; strict mode validates clean-Git sidecars and optional no-aug→aug direction |
 | [experiments/dl_real_scaled.py](../../experiments/dl_real_scaled.py) | `main()` | `COUNT [--revision REV] [--output-dir DIR]` | source zips + `download_provenance.json` |
@@ -80,7 +81,7 @@ protocol 이름을 쓴다. 커밋된 `experiments/results/<historical-run>/eval.
 | `epoch_<E>_Gen_raw.pt` | EMA run의 live generator; exact resume에 필요 |
 | `epoch_<E>_Dis_<stage>.pt` | stage D + optimizer/scheduler + v2 metadata |
 | `metrics.csv` | 단일 checkpoint eval append 결과, checkpoint path/SHA·model semantics·seed·processed sample 수 |
-| `<OUT>.provenance.json` | curve eval의 seed·data/checkpoint/result JSON hash·model/training/schedule config·학습 provenance·Git/runtime/hardware 정보 |
+| `<OUT>.provenance.json` | curve eval의 seed·data/checkpoint/result JSON hash·model/training/schedule config·학습 provenance·Git/runtime/hardware·CLIP 모델/가중치 fingerprint·fake sample 수 정보 |
 | `download_provenance.json` | HF source revision과 archive fingerprint |
 
 checkpoint는 DataParallel prefix를 제거해 저장한다. eval/infer와 `eval_curve.py`는

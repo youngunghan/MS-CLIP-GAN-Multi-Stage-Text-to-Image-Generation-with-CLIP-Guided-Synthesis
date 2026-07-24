@@ -2,7 +2,7 @@
 
 > **범위:** 다단계 생성기/판별기 구조, 텐서 흐름, CLIP 조건 증강, 손실 설계의 근거 + 논문용 다이어그램. 알려진 한계는 [explanation/correctness-and-fixes.md](correctness-and-fixes.md).
 > **대상:** 개발자·논문 figure 작성자.
-> **상태:** 구현 반영 — 기준일 2026-07-10.
+> **상태:** 구현 반영 — 기준일 2026-07-23.
 
 > 그림은 Mermaid 소스로 둔다(Obsidian/GitHub 렌더, 텍스트라 검증·갱신 가능). 표기: `B`=배치, 텐서는 `채널×H×W`.
 
@@ -58,7 +58,9 @@ flowchart TD
 
 [networks/generator.py](../../networks/generator.py) `ConditioningAugmention`은 `c_txt`(512)를 bias 없는 Linear로 256차원에 사상하고 앞/뒤 128씩 `(mu, log_sigma)`로 분리한다. 새 학습 기본 `--conditioning_activation linear`는 split 전 활성화를 두지 않아 둘 다 양수·음수를 표현한다. `c_hat = mu + exp(log_sigma)·ε`로 샘플하고 KL 정규화([criteria/loss.py](../../criteria/loss.py) `KL_divergence`)가 분포를 `N(0,I)` 부근으로 민다.
 
-metadata가 없는 기존 checkpoint는 호환을 위해 `--conditioning_activation relu` 의미로 로드된다. 이 legacy 모드는 split 전에 ReLU를 적용해 `mu, log_sigma ≥ 0`이므로, 새 기본값의 효과를 얻으려면 재학습해야 한다([§3 Checkpoint 호환·재학습 계약](correctness-and-fixes.md#3-checkpoint-호환재학습-계약)).
+`--deterministic_cond`(기본 off)를 켜면 이 reparameterization을 건너뛰고 `c_hat = mu`를 그대로 쓴다. KL이 `sigma`를 1.0 부근에 고정하는 상태에서는 unit-variance `ε` 항이 caption-종속 신호(차원당 표준편차 0.001~0.005)를 압도해 conditioning이 사실상 죽는데, `--deterministic_cond`는 그 노이즈 자체를 없애 대응한다(측정된 근본 원인은 [explanation/correctness-and-fixes.md §2.4](correctness-and-fixes.md#24-2026-07-23-conditioning-붕괴-진단복구)).
+
+metadata가 없는 기존 checkpoint는 호환을 위해 `--conditioning_activation relu`, `--deterministic_cond=False`(기존 확률적 forward) 의미로 로드된다. 이 legacy 모드는 split 전에 ReLU를 적용해 `mu, log_sigma ≥ 0`이므로, 새 기본값의 효과를 얻으려면 재학습해야 한다([§3 Checkpoint 호환·재학습 계약](correctness-and-fixes.md#3-checkpoint-호환재학습-계약)).
 
 ```mermaid
 flowchart LR
@@ -149,13 +151,17 @@ flowchart TD
 |---|---|---|
 | D conditional BCE | 각 단계, D 전체 합에 `0.5` | matched real→`real_label_smooth`. batch>1 기본은 generated fake와 real/mismatched가 기존 negative mass를 절반씩 공유(`real + 0.5×(fake+wrong)`); 해제/B=1은 기존 `real+fake` |
 | D unconditional BCE | `--use_uncond_loss`, 각 단계, D phase scale `0.5` | real→`real_label_smooth`, fake→0 |
-| D image-text InfoNCE | `--use_contrastive_loss`, real/fake 각각 `gamma=5`, D phase 적용 후 `2.5` | `align_out`·`txt` L2 정규화 후 diagonal cross-entropy(`contrastive_loss_D`) |
+| D image-text InfoNCE | `--use_contrastive_loss`, real/fake 각각 `--gamma`(기본 5.0), D phase 적용 후 `×0.5` | `align_out`·`txt` L2 정규화 후 diagonal cross-entropy(`contrastive_loss_D`). `--cond_warmup_epochs`/`--cond_ramp_epochs`로 이 두 항(D image trunk를 공유)을 초기 epoch 동안 게이트/ramp 가능 |
 | G conditional BCE | 각 단계, `1.0` | fake→1 non-saturating objective |
 | G unconditional BCE | `--use_uncond_loss`, 각 단계, `0.5` | fake→1 |
-| G alignment InfoNCE | `--use_contrastive_loss`, 각 단계, `gamma×0.5=2.5` | D의 image-only `align_out`을 text와 정렬 |
-| G CLIP InfoNCE | `--use_contrastive_loss`, 출력 변 256 이상(`lam=10`) | raw fake를 동결 CLIP image encoder에 통과시켜 text와 정렬; 기본 3-stage에서는 256 stage만, similarity는 float32 |
+| G alignment InfoNCE | `--use_contrastive_loss`, 각 단계, `--gamma×0.5`(기본 2.5) | D의 image-only `align_out`을 text와 정렬 |
+| G CLIP InfoNCE | `--use_contrastive_loss`, 출력 변 256(`CLIPConfig.MIN_QUALITY_SIZE`) 이상(`--lam`, 기본 10.0) | raw fake를 동결 CLIP image encoder에 통과시켜 text와 정렬; 기본 3-stage에서는 256 stage만, similarity는 float32 |
 | G mixed | `--use_mixed_loss`, 각 단계, 총 `0.1` | raw fake/real의 `0.3×L1 + 0.7×VGG16 perceptual`; VGG 입력은 `[0,1]`, network는 device별 cache |
-| KL(CANet) | batch당 1회, `1.0` | 모든 단계 G loss 합에 조건 증강 KL을 한 번 더함 |
+| KL(CANet) | batch당 1회, `--kl_weight`(기본 1.0) | 모든 단계 G loss 합에 조건 증강 KL을 한 번 더함. `--kl_weight 0`은 KL 항을 완전히 제거([explanation/correctness-and-fixes.md §2.4](correctness-and-fixes.md#24-2026-07-23-conditioning-붕괴-진단복구)) |
+
+`--gamma`/`--lam`/`--kl_weight`/`--cond_warmup_epochs`/`--cond_ramp_epochs`는 이전에
+literal로 하드코딩됐던 값을 노출한 것이며, 각 기본값은 그 literal을 그대로 재현한다
+([reference/configuration.md §2 학습 옵션](../reference/configuration.md#2-학습-옵션-trainoptions)).
 
 CLIP(ViT-B/32)은 동결되어 생성기 가이드 신호로만 쓰인다([scripts/train.py](../../scripts/train.py)에서 `requires_grad_(False)`). DiffAugment를 켜면 D update에서는 real/fake 양쪽 D 입력에 적용하고, G update에서는 fake의 **D가 보는 view**에만 적용한다. CLIP/VGG 항은 증강하지 않은 raw fake를 쓴다.
 
